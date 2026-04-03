@@ -1,0 +1,348 @@
+/**
+ * ═══════════════════════════════════════════════════════════
+ * 📊 МОДУЛЬ БАЗЫ ДАННЫХ (SQLite)
+ * ═══════════════════════════════════════════════════════════
+ */
+
+const sqlite3 = require('sqlite3').verbose();
+const path = require('path');
+
+// Путь к базе данных
+const DB_PATH = path.join(__dirname, 'data', 'payments.db');
+
+// Создаём подключение
+const db = new sqlite3.Database(DB_PATH, (err) => {
+  if (err) {
+    console.error('❌ Ошибка подключения к БД:', err.message);
+  } else {
+    console.log('✅ Подключено к SQLite:', DB_PATH);
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
+// СОЗДАНИЕ ТАБЛИЦ
+// ═══════════════════════════════════════════════════════════
+
+db.serialize(() => {
+  // Таблица платежей
+  db.run(`
+    CREATE TABLE IF NOT EXISTS payments (
+      id TEXT PRIMARY KEY,
+      order_id TEXT UNIQUE,
+      amount REAL NOT NULL,
+      currency TEXT DEFAULT 'RUB',
+      status TEXT DEFAULT 'pending',
+      description TEXT,
+      customer_email TEXT,
+      customer_phone TEXT,
+      customer_name TEXT,
+      service_name TEXT,
+      payment_method TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      paid_at DATETIME,
+      metadata TEXT
+    )
+  `);
+
+  // Таблица записей на сеансы
+  db.run(`
+    CREATE TABLE IF NOT EXISTS sessions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      payment_id TEXT,
+      client_name TEXT NOT NULL,
+      client_phone TEXT NOT NULL,
+      client_email TEXT,
+      service_name TEXT NOT NULL,
+      session_date TEXT NOT NULL,
+      session_time TEXT NOT NULL,
+      session_datetime DATETIME NOT NULL,
+      amount REAL NOT NULL,
+      status TEXT DEFAULT 'scheduled',
+      comment TEXT,
+      reminder_sent INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (payment_id) REFERENCES payments(id)
+    )
+  `);
+
+  // Таблица настроек
+  db.run(`
+    CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY,
+      value TEXT
+    )
+  `);
+
+  // Индексы для ускорения поиска
+  db.run(`CREATE INDEX IF NOT EXISTS idx_sessions_date ON sessions(session_date)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status)`);
+});
+
+// ═══════════════════════════════════════════════════════════
+// ФУНКЦИИ ДЛЯ РАБОТЫ С ПЛАТЕЖАМИ
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * Создать запись о платеже
+ */
+function createPayment(data) {
+  return new Promise((resolve, reject) => {
+    const {
+      id, order_id, amount, currency, status, description,
+      customer_email, customer_phone, customer_name, service_name,
+      payment_method, metadata
+    } = data;
+
+    const sql = `
+      INSERT INTO payments (
+        id, order_id, amount, currency, status, description,
+        customer_email, customer_phone, customer_name, service_name,
+        payment_method, metadata
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `;
+
+    const params = [
+      id, order_id, amount, currency || 'RUB', status || 'pending', description,
+      customer_email, customer_phone, customer_name, service_name,
+      payment_method, metadata ? JSON.stringify(metadata) : null
+    ];
+
+    db.run(sql, params, function(err) {
+      if (err) reject(err);
+      else resolve({ id: this.id, order_id });
+    });
+  });
+}
+
+/**
+ * Обновить статус платежа
+ */
+function updatePaymentStatus(paymentId, status, paidAt = null) {
+  return new Promise((resolve, reject) => {
+    const sql = `UPDATE payments SET status = ?, paid_at = ? WHERE id = ?`;
+    db.run(sql, [status, paidAt || new Date().toISOString(), paymentId], function(err) {
+      if (err) reject(err);
+      else resolve({ changes: this.changes });
+    });
+  });
+}
+
+/**
+ * Получить платёж по ID
+ */
+function getPayment(paymentId) {
+  return new Promise((resolve, reject) => {
+    const sql = `SELECT * FROM payments WHERE id = ?`;
+    db.get(sql, [paymentId], (err, row) => {
+      if (err) reject(err);
+      else resolve(row);
+    });
+  });
+}
+
+/**
+ * Получить все платежи
+ */
+function getAllPayments(limit = 50) {
+  return new Promise((resolve, reject) => {
+    const sql = `SELECT * FROM payments ORDER BY created_at DESC LIMIT ?`;
+    db.all(sql, [limit], (err, rows) => {
+      if (err) reject(err);
+      else resolve(rows);
+    });
+  });
+}
+
+// ═══════════════════════════════════════════════════════════
+// ФУНКЦИИ ДЛЯ РАБОТЫ С СЕАНСАМИ
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * Создать запись о сеансе
+ */
+function createSession(data) {
+  return new Promise((resolve, reject) => {
+    const {
+      payment_id, client_name, client_phone, client_email,
+      service_name, session_date, session_time, session_datetime,
+      amount, comment
+    } = data;
+
+    const sql = `
+      INSERT INTO sessions (
+        payment_id, client_name, client_phone, client_email,
+        service_name, session_date, session_time, session_datetime,
+        amount, comment
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `;
+
+    const params = [
+      payment_id, client_name, client_phone, client_email,
+      service_name, session_date, session_time, session_datetime,
+      amount, comment
+    ];
+
+    db.run(sql, params, function(err) {
+      if (err) reject(err);
+      else resolve({ id: this.lastID, payment_id });
+    });
+  });
+}
+
+/**
+ * Получить все сеансы
+ */
+function getAllSessions(limit = 100) {
+  return new Promise((resolve, reject) => {
+    const sql = `
+      SELECT * FROM sessions 
+      WHERE session_datetime >= datetime('now', 'localtime')
+      ORDER BY session_datetime ASC 
+      LIMIT ?
+    `;
+    db.all(sql, [limit], (err, rows) => {
+      if (err) reject(err);
+      else resolve(rows);
+    });
+  });
+}
+
+/**
+ * Получить прошедшие сеансы
+ */
+function getPastSessions(limit = 50) {
+  return new Promise((resolve, reject) => {
+    const sql = `
+      SELECT * FROM sessions 
+      WHERE session_datetime < datetime('now', 'localtime')
+      ORDER BY session_datetime DESC 
+      LIMIT ?
+    `;
+    db.all(sql, [limit], (err, rows) => {
+      if (err) reject(err);
+      else resolve(rows);
+    });
+  });
+}
+
+/**
+ * Получить сеансы для напоминания (за 2 дня)
+ */
+function getSessionsForReminder() {
+  return new Promise((resolve, reject) => {
+    // Находим сеансы через 48 часов (±1 час)
+    const sql = `
+      SELECT * FROM sessions 
+      WHERE session_datetime BETWEEN datetime('now', 'localtime', '+47 hours') 
+                                 AND datetime('now', 'localtime', '+49 hours')
+        AND reminder_sent = 0
+        AND status = 'scheduled'
+    `;
+    db.all(sql, [], (err, rows) => {
+      if (err) reject(err);
+      else resolve(rows);
+    });
+  });
+}
+
+/**
+ * Пометить напоминание как отправленное
+ */
+function markReminderSent(sessionId) {
+  return new Promise((resolve, reject) => {
+    const sql = `UPDATE sessions SET reminder_sent = 1 WHERE id = ?`;
+    db.run(sql, [sessionId], function(err) {
+      if (err) reject(err);
+      else resolve({ changes: this.changes });
+    });
+  });
+}
+
+/**
+ * Обновить статус сеанса
+ */
+function updateSessionStatus(sessionId, status) {
+  return new Promise((resolve, reject) => {
+    const sql = `UPDATE sessions SET status = ? WHERE id = ?`;
+    db.run(sql, [status, sessionId], function(err) {
+      if (err) reject(err);
+      else resolve({ changes: this.changes });
+    });
+  });
+}
+
+/**
+ * Удалить сеанс
+ */
+function deleteSession(sessionId) {
+  return new Promise((resolve, reject) => {
+    const sql = `DELETE FROM sessions WHERE id = ?`;
+    db.run(sql, [sessionId], function(err) {
+      if (err) reject(err);
+      else resolve({ changes: this.changes });
+    });
+  });
+}
+
+/**
+ * Получить сеанс по ID
+ */
+function getSession(sessionId) {
+  return new Promise((resolve, reject) => {
+    const sql = `SELECT * FROM sessions WHERE id = ?`;
+    db.get(sql, [sessionId], (err, row) => {
+      if (err) reject(err);
+      else resolve(row);
+    });
+  });
+}
+
+// ═══════════════════════════════════════════════════════════
+// ФУНКЦИИ ДЛЯ НАСТРОЕК
+// ═══════════════════════════════════════════════════════════
+
+function setSetting(key, value) {
+  return new Promise((resolve, reject) => {
+    const sql = `INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)`;
+    db.run(sql, [key, value], function(err) {
+      if (err) reject(err);
+      else resolve({ key, value });
+    });
+  });
+}
+
+function getSetting(key) {
+  return new Promise((resolve, reject) => {
+    const sql = `SELECT value FROM settings WHERE key = ?`;
+    db.get(sql, [key], (err, row) => {
+      if (err) reject(err);
+      else resolve(row ? row.value : null);
+    });
+  });
+}
+
+// ═══════════════════════════════════════════════════════════
+// ЭКСПОРТ
+// ═══════════════════════════════════════════════════════════
+
+module.exports = {
+  db,
+  // Платежи
+  createPayment,
+  updatePaymentStatus,
+  getPayment,
+  getAllPayments,
+  // Сеансы
+  createSession,
+  getAllSessions,
+  getPastSessions,
+  getSessionsForReminder,
+  markReminderSent,
+  updateSessionStatus,
+  deleteSession,
+  getSession,
+  // Настройки
+  setSetting,
+  getSetting
+};
