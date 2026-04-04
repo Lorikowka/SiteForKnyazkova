@@ -67,6 +67,11 @@ const SITE_URL = process.env.SITE_URL || 'http://localhost:1488';
 const MOCK_MODE = process.env.MOCK_MODE === 'true';
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+const SMTP_HOST = process.env.SMTP_HOST || 'smtp.gmail.com';
+const SMTP_PORT = process.env.SMTP_PORT || 587;
+const SMTP_USER = process.env.SMTP_USER;
+const SMTP_PASS = process.env.SMTP_PASS;
+const SMTP_FROM = process.env.SMTP_FROM || SMTP_USER;
 
 const YOOKASSA_BASE_URL = 'https://api.yookassa.ru/v3';
 const AUTH_HEADER = Buffer.from(`${YOOKASSA_SHOP_ID}:${YOOKASSA_SECRET_KEY}`).toString('base64');
@@ -160,6 +165,75 @@ async function sendTelegramNotification(message) {
   }
 }
 
+async function sendEmailConfirmation({ email, name, amount, serviceName, sessionDate, sessionTime, paymentId }) {
+  if (!SMTP_USER || !SMTP_PASS) {
+    logger.warn('SMTP не настроен. Email не отправлен.');
+    return;
+  }
+
+  const nodemailer = require('nodemailer');
+
+  try {
+    const transporter = nodemailer.createTransport({
+      host: SMTP_HOST,
+      port: SMTP_PORT,
+      secure: SMTP_PORT === 465,
+      auth: {
+        user: SMTP_USER,
+        pass: SMTP_PASS
+      }
+    });
+
+    const htmlContent = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h2 style="color: #667eea;">✅ Оплата прошла успешно!</h2>
+        <p>Здравствуйте, <strong>${sanitizeInput(name)}</strong>!</p>
+        <p>Ваша оплата принята. Детали записи:</p>
+        
+        <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
+          <tr>
+            <td style="padding: 10px; border-bottom: 1px solid #eee; color: #666;">Услуга:</td>
+            <td style="padding: 10px; border-bottom: 1px solid #eee;"><strong>${sanitizeInput(serviceName)}</strong></td>
+          </tr>
+          <tr>
+            <td style="padding: 10px; border-bottom: 1px solid #eee; color: #666;">Дата:</td>
+            <td style="padding: 10px; border-bottom: 1px solid #eee;">${sanitizeInput(sessionDate || '—')}</td>
+          </tr>
+          <tr>
+            <td style="padding: 10px; border-bottom: 1px solid #eee; color: #666;">Время:</td>
+            <td style="padding: 10px; border-bottom: 1px solid #eee;">${sanitizeInput(sessionTime || '—')}</td>
+          </tr>
+          <tr>
+            <td style="padding: 10px; border-bottom: 1px solid #eee; color: #666;">Сумма:</td>
+            <td style="padding: 10px; border-bottom: 1px solid #eee;"><strong style="color: #4CAF50;">${amount} ₽</strong></td>
+          </tr>
+          <tr>
+            <td style="padding: 10px; border-bottom: 1px solid #eee; color: #666;">ID платежа:</td>
+            <td style="padding: 10px; border-bottom: 1px solid #eee;">${paymentId}</td>
+          </tr>
+        </table>
+        
+        <p style="margin-top: 30px; padding-top: 20px; border-top: 2px solid #eee; color: #999; font-size: 14px;">
+          Мы свяжемся с вами для подтверждения записи.<br>
+          Если у вас есть вопросы, напишите нам в 
+          <a href="https://t.me/Ekaterina_K" style="color: #667eea;">Telegram</a>
+        </p>
+      </div>
+    `;
+
+    await transporter.sendMail({
+      from: `"Екатерина Князькова" <${SMTP_FROM}>`,
+      to: email,
+      subject: '✅ Оплата принята — Консультация психолога',
+      html: htmlContent
+    });
+
+    logger.info(`📧 Email отправлен на ${email}`);
+  } catch (error) {
+    logger.error(`❌ Ошибка отправки email: ${error.message}`);
+  }
+}
+
 // ——————————————————————————————
 // API: СОЗДАТЬ ПЛАТЁЖ
 // ——————————————————————————————
@@ -239,6 +313,19 @@ app.post('/api/create-payment',
             comment
           });
           logger.info(`✅ Сеанс сохранён в БД: ${sessionDatetime}`);
+        }
+
+        // Отправляем email подтверждение
+        if (customerEmail) {
+          await sendEmailConfirmation({
+            email: customerEmail,
+            name: customerName,
+            amount,
+            serviceName: serviceName || description,
+            sessionDate,
+            sessionTime,
+            paymentId
+          });
         }
 
         logger.info(`✅ MOCK платёж создан: ${paymentId}`);
@@ -372,7 +459,7 @@ app.post('/api/webhook', async (req, res) => {
       // Получаем метаданные
       const metadata = object.metadata ? JSON.parse(object.metadata) : {};
 
-      // Если есть данные о сеансе — сохраняем
+      // Если есть данные о сеансе — сохраняем и отправляем email
       if (metadata.sessionDatetime && metadata.customerPhone) {
         await db.createSession({
           payment_id: object.id,
@@ -386,12 +473,36 @@ app.post('/api/webhook', async (req, res) => {
           amount: object.amount.value,
           comment: metadata.comment
         });
+
+        // Отправляем email подтверждение
+        if (metadata.customerEmail) {
+          await sendEmailConfirmation({
+            email: metadata.customerEmail,
+            name: metadata.customerName,
+            amount: object.amount.value,
+            serviceName: metadata.serviceName,
+            sessionDate: metadata.sessionDate,
+            sessionTime: metadata.sessionTime,
+            paymentId: object.id
+          });
+        }
       }
 
       await sendTelegramNotification(
         `✅ <b>Оплата получена!</b>\n\n` +
         `💰 Сумма: ${object.amount.value} ₽\n` +
         `🆔 ID: ${object.id}`
+      );
+    } else if (event.event === 'payment.canceled' || event.event === 'payment.expired') {
+      // Обновляем статус в БД, но НЕ сохраняем сеанс
+      await db.updatePaymentStatus(object.id, object.status);
+
+      logger.info(`❌ Платёж отменён/истёк: ${object.id}. Сеанс НЕ сохранён в БД.`);
+
+      await sendTelegramNotification(
+        `❌ <b>Оплата отменена!</b>\n\n` +
+        `🆔 ID: ${object.id}\n` +
+        `📝 Причина: ${object.cancellation_details?.reason || 'не указана'}`
       );
     }
 
