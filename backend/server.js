@@ -32,6 +32,9 @@ const cron = require('node-cron');
 // База данных
 const db = require('./database');
 
+// Email уведомления
+const emailService = require('./email');
+
 const app = express();
 const PORT = process.env.PORT || 1488;
 const FRONTEND_PATH = path.join(__dirname, '..', 'frontend');
@@ -239,6 +242,27 @@ app.post('/api/create-payment',
             comment
           });
           logger.info(`✅ Сеанс сохранён в БД: ${sessionDatetime}`);
+
+          // Отправляем email подтверждение клиенту
+          if (customerEmail) {
+            emailService.sendBookingConfirmation({
+              to: customerEmail,
+              clientName: customerName,
+              serviceName: serviceName || description,
+              sessionDate: sessionDate,
+              sessionTime: sessionTime,
+              amount,
+              comment
+            }).then(result => {
+              if (result.success) {
+                logger.info(`📧 Email подтверждение отправлено: ${customerEmail}`);
+              } else {
+                logger.warn(`⚠️ Не удалось отправить email: ${result.error}`);
+              }
+            }).catch(err => {
+              logger.error(`❌ Ошибка отправки email: ${err.message}`);
+            });
+          }
         }
 
         logger.info(`✅ MOCK платёж создан: ${paymentId}`);
@@ -386,6 +410,27 @@ app.post('/api/webhook', async (req, res) => {
           amount: object.amount.value,
           comment: metadata.comment
         });
+
+        // Отправляем email подтверждение клиенту
+        if (metadata.customerEmail) {
+          emailService.sendBookingConfirmation({
+            to: metadata.customerEmail,
+            clientName: metadata.customerName,
+            serviceName: metadata.serviceName,
+            sessionDate: metadata.sessionDate,
+            sessionTime: metadata.sessionTime,
+            amount: object.amount.value,
+            comment: metadata.comment
+          }).then(result => {
+            if (result.success) {
+              logger.info(`📧 Email подтверждение отправлено: ${metadata.customerEmail}`);
+            } else {
+              logger.warn(`⚠️ Не удалось отправить email: ${result.error}`);
+            }
+          }).catch(err => {
+            logger.error(`❌ Ошибка отправки email: ${err.message}`);
+          });
+        }
       }
 
       await sendTelegramNotification(
