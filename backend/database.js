@@ -16,8 +16,32 @@ const db = new sqlite3.Database(DB_PATH, (err) => {
     console.error('❌ Ошибка подключения к БД:', err.message);
   } else {
     console.log('✅ Подключено к SQLite:', DB_PATH);
+    // WAL mode для лучшей конкурентности
+    db.run('PRAGMA journal_mode=WAL');
+    // Busy timeout — ждать 5 секунд перед SQLITE_BUSY
+    db.run('PRAGMA busy_timeout=5000');
   }
 });
+
+/**
+ * Retry-обёртка для SQLite операций
+ * Повторяет до 3 раз при SQLITE_BUSY с экспоненциальной задержкой
+ */
+async function withRetry(fn, maxRetries = 3, baseDelay = 100) {
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (err.code === 'SQLITE_BUSY' && attempt < maxRetries - 1) {
+        const delay = baseDelay * Math.pow(2, attempt);
+        console.warn(`⚠️ SQLITE_BUSY, повторная попыка через ${delay}мс (попытка ${attempt + 1}/${maxRetries})`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      } else {
+        throw err;
+      }
+    }
+  }
+}
 
 // ═══════════════════════════════════════════════════════════
 // СОЗДАНИЕ ТАБЛИЦ
@@ -326,8 +350,47 @@ function getSetting(key) {
 // ЭКСПОРТ
 // ═══════════════════════════════════════════════════════════
 
+/**
+ * Экранирует специальные HTML-символы для защиты от XSS
+ */
+function escapeHtml(str) {
+  if (typeof str !== 'string') return str;
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#x27;');
+}
+
+/**
+ * Санитизирует входные данные (удаляет опасные HTML/JS для защиты от XSS)
+ * Использует полноценную фильтрацию вместо простого удаления <>
+ */
+function sanitizeInput(input) {
+  if (typeof input !== 'string') return input;
+  return input
+    // Удаляем HTML-теги
+    .replace(/<\/?[^>]*>/g, '')
+    // Удаляем HTML-сущности
+    .replace(/&[a-zA-Z0-9#]+;/g, '')
+    // Удаляем javascript: URI
+    .replace(/javascript\s*:/gi, '')
+    // Удаляем on* обработчики
+    .replace(/\bon\w+\s*=/gi, '')
+    // Удаляем data: URI (могут содержать XSS)
+    .replace(/data\s*:/gi, '')
+    // Экранируем обратные кавычки (template literals)
+    .replace(/`/g, '')
+    .trim();
+}
+
 module.exports = {
   db,
+  // Утилиты
+  escapeHtml,
+  sanitizeInput,
+  withRetry,
   // Платежи
   createPayment,
   updatePaymentStatus,

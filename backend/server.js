@@ -23,18 +23,20 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
-const { body, param, validationResult } = require('express-validator');
+const { body, validationResult } = require('express-validator');
 const crypto = require('crypto');
-const axios = require('axios');
 const winston = require('winston');
-const cron = require('node-cron');
 
 // База данных
 const db = require('./database');
+const { escapeHtml, sanitizeInput, withRetry } = db;
 
 const app = express();
 const PORT = process.env.PORT || 1488;
 const FRONTEND_PATH = path.join(__dirname, '..', 'frontend');
+
+// Загружаем конфигурацию услуг
+const config = require('./config.json');
 
 // ——————————————————————————————
 // ЛОГИРОВАНИЕ
@@ -63,6 +65,7 @@ const logger = winston.createLogger({
 // ——————————————————————————————
 const YOOKASSA_SHOP_ID = process.env.YOOKASSA_SHOP_ID;
 const YOOKASSA_SECRET_KEY = process.env.YOOKASSA_SECRET_KEY;
+const YOOKASSA_WEBHOOK_SECRET = process.env.YOOKASSA_WEBHOOK_SECRET;
 const SITE_URL = process.env.SITE_URL || 'http://localhost:1488';
 const MOCK_MODE = process.env.MOCK_MODE === 'true';
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -72,6 +75,7 @@ const SMTP_PORT = process.env.SMTP_PORT || 587;
 const SMTP_USER = process.env.SMTP_USER;
 const SMTP_PASS = process.env.SMTP_PASS;
 const SMTP_FROM = process.env.SMTP_FROM || SMTP_USER;
+const API_KEY = process.env.API_KEY || ''; // Ключ для авторизации админ-запросов
 
 const YOOKASSA_BASE_URL = 'https://api.yookassa.ru/v3';
 const AUTH_HEADER = Buffer.from(`${YOOKASSA_SHOP_ID}:${YOOKASSA_SECRET_KEY}`).toString('base64');
@@ -123,6 +127,11 @@ app.use(express.urlencoded({ extended: true, limit: '10kb' }));
 // ——————————————————————————————
 app.use(express.static(FRONTEND_PATH));
 
+// Редирект /payment-failed → payment-failed.html
+app.get('/payment-failed', (req, res) => {
+  res.sendFile(path.join(FRONTEND_PATH, 'payment-failed.html'));
+});
+
 app.get('*', (req, res, next) => {
   if (req.path.startsWith('/api/')) return next();
   const filePath = path.join(FRONTEND_PATH, req.path);
@@ -135,9 +144,30 @@ app.get('*', (req, res, next) => {
 // ——————————————————————————————
 // HELPER ФУНКЦИИ
 // ——————————————————————————————
-function sanitizeInput(input) {
-  if (typeof input !== 'string') return input;
-  return input.replace(/[<>]/g, '').trim();
+// sanitizeInput импортирован из database.js
+
+/**
+ * Проверяет HMAC-SHA256 подпись webhook от ЮKassa
+ */
+function verifyWebhookSignature(body, signature) {
+  if (!YOOKASSA_WEBHOOK_SECRET) {
+    logger.warn('⚠️ YOOKASSA_WEBHOOK_SECRET не установлен — проверка подписи пропущена');
+    return true; // Временно пропускаем если ключ не настроен
+  }
+
+  if (!signature) {
+    logger.warn('⚠️ Отсутствует заголовок X-Yookassa-Signature');
+    return false;
+  }
+
+  const hmac = crypto.createHmac('sha256', YOOKASSA_WEBHOOK_SECRET);
+  hmac.update(JSON.stringify(body));
+  const calculatedSignature = hmac.digest('hex');
+
+  return crypto.timingSafeEqual(
+    Buffer.from(signature),
+    Buffer.from(calculatedSignature)
+  );
 }
 
 const handleValidationErrors = (req, res, next) => {
@@ -152,14 +182,39 @@ const handleValidationErrors = (req, res, next) => {
   next();
 };
 
+/**
+ * Middleware: проверка API-ключа для админ-эндпоинтов
+ * Если API_KEY не установлен — пропускает все запросы (backward compatibility)
+ */
+function requireApiKey(req, res, next) {
+  if (!API_KEY) {
+    logger.warn('⚠️ API_KEY не установлен — админ-эндпоинты без защиты');
+    return next();
+  }
+
+  const providedKey = req.headers['x-api-key'];
+  if (!providedKey || providedKey !== API_KEY) {
+    logger.warn('🚋 Неверный API-Key');
+    return res.status(401).json({ success: false, error: 'Неверный ключ авторизации' });
+  }
+  next();
+}
+
 async function sendTelegramNotification(message) {
   if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return;
   try {
-    await axios.post(
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    await fetch(
       `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
-      { chat_id: TELEGRAM_CHAT_ID, text: sanitizeInput(message), parse_mode: 'HTML' },
-      { timeout: 5000 }
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text: sanitizeInput(message), parse_mode: 'HTML' }),
+        signal: controller.signal
+      }
     );
+    clearTimeout(timeout);
   } catch (error) {
     logger.error(`Telegram error: ${error.message}`);
   }
@@ -187,35 +242,35 @@ async function sendEmailConfirmation({ email, name, amount, serviceName, session
     const htmlContent = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
         <h2 style="color: #667eea;">✅ Оплата прошла успешно!</h2>
-        <p>Здравствуйте, <strong>${sanitizeInput(name)}</strong>!</p>
+        <p>Здравствуйте, <strong>${escapeHtml(name)}</strong>!</p>
         <p>Ваша оплата принята. Детали записи:</p>
-        
+
         <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
           <tr>
             <td style="padding: 10px; border-bottom: 1px solid #eee; color: #666;">Услуга:</td>
-            <td style="padding: 10px; border-bottom: 1px solid #eee;"><strong>${sanitizeInput(serviceName)}</strong></td>
+            <td style="padding: 10px; border-bottom: 1px solid #eee;"><strong>${escapeHtml(serviceName)}</strong></td>
           </tr>
           <tr>
             <td style="padding: 10px; border-bottom: 1px solid #eee; color: #666;">Дата:</td>
-            <td style="padding: 10px; border-bottom: 1px solid #eee;">${sanitizeInput(sessionDate || '—')}</td>
+            <td style="padding: 10px; border-bottom: 1px solid #eee;">${escapeHtml(sessionDate || '—')}</td>
           </tr>
           <tr>
             <td style="padding: 10px; border-bottom: 1px solid #eee; color: #666;">Время:</td>
-            <td style="padding: 10px; border-bottom: 1px solid #eee;">${sanitizeInput(sessionTime || '—')}</td>
+            <td style="padding: 10px; border-bottom: 1px solid #eee;">${escapeHtml(sessionTime || '—')}</td>
           </tr>
           <tr>
             <td style="padding: 10px; border-bottom: 1px solid #eee; color: #666;">Сумма:</td>
-            <td style="padding: 10px; border-bottom: 1px solid #eee;"><strong style="color: #4CAF50;">${amount} ₽</strong></td>
+            <td style="padding: 10px; border-bottom: 1px solid #eee;"><strong style="color: #4CAF50;">${escapeHtml(amount.toString())} ₽</strong></td>
           </tr>
           <tr>
             <td style="padding: 10px; border-bottom: 1px solid #eee; color: #666;">ID платежа:</td>
-            <td style="padding: 10px; border-bottom: 1px solid #eee;">${paymentId}</td>
+            <td style="padding: 10px; border-bottom: 1px solid #eee;">${escapeHtml(paymentId)}</td>
           </tr>
         </table>
-        
+
         <p style="margin-top: 30px; padding-top: 20px; border-top: 2px solid #eee; color: #999; font-size: 14px;">
           Мы свяжемся с вами для подтверждения записи.<br>
-          Если у вас есть вопросы, напишите нам в 
+          Если у вас есть вопросы, напишите нам в
           <a href="https://t.me/Ekaterina_K" style="color: #667eea;">Telegram</a>
         </p>
       </div>
@@ -296,7 +351,7 @@ app.post('/api/create-payment',
         // Обновляем статус на succeeded (в MOCK режиме платёж считается успешным)
         await db.updatePaymentStatus(paymentId, 'succeeded', new Date().toISOString());
 
-        const mockConfirmationUrl = `${SITE_URL}/payment-success.html?mock=true&amount=${amount}&payment_id=${paymentId}`;
+        const mockConfirmationUrl = `${SITE_URL}/payment-check.html?mock=true&amount=${amount}&payment_id=${paymentId}`;
 
         // Сохраняем сеанс в БД
         if (sessionDatetime && customerName && customerPhone) {
@@ -339,30 +394,34 @@ app.post('/api/create-payment',
       }
 
       // Реальный платёж через ЮKassa
-      const response = await axios.post(
+      const ykController = new AbortController();
+      const ykTimeout = setTimeout(() => ykController.abort(), 10000);
+      const ykResponse = await fetch(
         `${YOOKASSA_BASE_URL}/payments`,
         {
-          amount: { value: amount.toString(), currency: 'RUB' },
-          description,
-          metadata: { order_id: orderNumber },
-          confirmation: {
-            type: 'redirect',
-            return_url: `${SITE_URL}/payment-success.html?payment_id=${paymentId}`
-          },
-          capture: true,
-          paid: false
-        },
-        {
+          method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             'Idempotence-Key': orderNumber,
             'Authorization': `Basic ${AUTH_HEADER}`
           },
-          timeout: 10000
+          body: JSON.stringify({
+            amount: { value: amount.toString(), currency: 'RUB' },
+            description,
+            metadata: { order_id: orderNumber },
+            confirmation: {
+              type: 'redirect',
+              return_url: `${SITE_URL}/payment-check.html?payment_id=${paymentId}`
+            },
+            capture: true,
+            paid: false
+          }),
+          signal: ykController.signal
         }
       );
+      clearTimeout(ykTimeout);
 
-      const payment = response.data;
+      const payment = await ykResponse.json();
       logger.info(`✅ Платёж создан в ЮKassa: ${payment.id}`);
 
       // Обновляем ID платежа на реальный ID от ЮKassa
@@ -406,17 +465,18 @@ app.get('/api/payment/:id', async (req, res) => {
     // Если статус pending и не MOCK — проверяем через API ЮKassa
     if (payment.status === 'pending' && !MOCK_MODE) {
       try {
-        const ykResponse = await axios.get(
+        const checkController = new AbortController();
+        const checkTimeout = setTimeout(() => checkController.abort(), 5000);
+        const ykResponse = await fetch(
           `${YOOKASSA_BASE_URL}/payments/${id}`,
           {
-            headers: {
-              'Authorization': `Basic ${AUTH_HEADER}`
-            },
-            timeout: 5000
+            headers: { 'Authorization': `Basic ${AUTH_HEADER}` },
+            signal: checkController.signal
           }
         );
+        clearTimeout(checkTimeout);
 
-        const ykPayment = ykResponse.data;
+        const ykPayment = await ykResponse.json();
         if (ykPayment.status === 'succeeded' || ykPayment.paid) {
           // Обновляем статус в БД
           await db.updatePaymentStatus(id, 'succeeded', ykPayment.paid_at);
@@ -450,9 +510,26 @@ app.post('/api/webhook', async (req, res) => {
       return res.status(400).send('Invalid event format');
     }
 
-    logger.info(`📩 Webhook: ${event.event} ${object.id}`);
+    // Проверяем HMAC-SHA256 подпись
+    const signature = req.headers['x-yookassa-signature'];
+    if (!verifyWebhookSignature(event, signature)) {
+      logger.warn('🚨 Неверная подпись webhook! Запрос отклонён.');
+      return res.status(401).send('Invalid signature');
+    }
+
+    // Защита от дублирования: проверяем, не обрабатывали уже этот event
+    const eventId = event.id || `${event.event}_${object.id}_${event.created_at}`;
+    const existingPayment = await db.getPayment(object.id);
+
+    logger.info(`📩 Webhook: ${event.event} ${object.id} (event: ${eventId})`);
 
     if (event.event === 'payment.succeeded') {
+      // Если уже обработан — пропускаем
+      if (existingPayment && existingPayment.status === 'succeeded') {
+        logger.info(`⏭️ Платёж ${object.id} уже обработан — пропускаем`);
+        return res.status(200).send('OK');
+      }
+
       // Обновляем статус платежа в БД
       await db.updatePaymentStatus(object.id, 'succeeded', object.paid_at);
 
@@ -494,10 +571,33 @@ app.post('/api/webhook', async (req, res) => {
         `🆔 ID: ${object.id}`
       );
     } else if (event.event === 'payment.canceled' || event.event === 'payment.expired') {
-      // Обновляем статус в БД, но НЕ сохраняем сеанс
+      // Если уже отменён — пропускаем
+      if (existingPayment && (existingPayment.status === 'canceled' || existingPayment.status === 'expired')) {
+        logger.info(`⏭️ Платёж ${object.id} уже отменён — пропускаем`);
+        return res.status(200).send('OK');
+      }
+
+      // Обновляем статус в БД
       await db.updatePaymentStatus(object.id, object.status);
 
-      logger.info(`❌ Платёж отменён/истёк: ${object.id}. Сеанс НЕ сохранён в БД.`);
+      // Отменяем связанный сеанс (если есть)
+      try {
+        const sessions = await new Promise((resolve, reject) => {
+          db.db.all('SELECT id FROM sessions WHERE payment_id = ?', [object.id], (err, rows) => {
+            if (err) reject(err);
+            else resolve(rows);
+          });
+        });
+
+        for (const session of sessions) {
+          await db.updateSessionStatus(session.id, 'cancelled');
+          logger.info(`❌ Сеанс #${session.id} отменён (платёж ${object.id})`);
+        }
+      } catch (sessionError) {
+        logger.warn(`⚠️ Не удалось отменить сеанс: ${sessionError.message}`);
+      }
+
+      logger.info(`❌ Платёж отменён/истёк: ${object.id}. Сеанс(ы) переведены в статус 'cancelled'.`);
 
       await sendTelegramNotification(
         `❌ <b>Оплата отменена!</b>\n\n` +
@@ -516,43 +616,183 @@ app.post('/api/webhook', async (req, res) => {
 // ——————————————————————————————
 // API: ПОЛУЧИТЬ ВСЕ СЕАНСЫ (для бота)
 // ——————————————————————————————
-app.get('/api/sessions', async (req, res) => {
-  try {
-    const { limit = 100, past = 'false' } = req.query;
-    const sessions = past === 'true'
-      ? await db.getPastSessions(parseInt(limit))
-      : await db.getAllSessions(parseInt(limit));
+app.get('/api/sessions',
+  requireApiKey,
+  rateLimit({ windowMs: 60000, max: 30 }),
+  async (req, res) => {
+    try {
+      const { limit = 50, past = 'false', page = 1 } = req.query;
+      const safeLimit = Math.min(parseInt(limit) || 50, 200);
+      const safePage = Math.max(parseInt(page) || 1, 1);
+      const offset = (safePage - 1) * safeLimit;
 
-    res.json({ success: true, sessions });
-  } catch (error) {
-    logger.error(`❌ Ошибка получения сеансов:`, error.message);
-    res.status(500).json({ success: false, error: error.message });
+      const sessions = past === 'true'
+        ? await db.getPastSessions(safeLimit)
+        : await db.getAllSessions(safeLimit);
+
+      res.json({ success: true, sessions, page: safePage, limit: safeLimit, total: sessions.length });
+    } catch (error) {
+      logger.error(`❌ Ошибка получения сеансов:`, error.message);
+      res.status(500).json({ success: false, error: error.message });
+    }
   }
-});
+);
 
 // ——————————————————————————————
 // API: ПОЛУЧИТЬ ВСЕ ПЛАТЕЖИ (для бота)
 // ——————————————————————————————
-app.get('/api/payments', async (req, res) => {
-  try {
-    const { limit = 50 } = req.query;
-    const payments = await db.getAllPayments(parseInt(limit));
-    res.json({ success: true, payments });
-  } catch (error) {
-    logger.error(`❌ Ошибка получения платежей:`, error.message);
-    res.status(500).json({ success: false, error: error.message });
+app.get('/api/payments',
+  requireApiKey,
+  rateLimit({ windowMs: 60000, max: 30 }),
+  async (req, res) => {
+    try {
+      const { limit = 20, page = 1 } = req.query;
+      const safeLimit = Math.min(parseInt(limit) || 20, 100);
+      const safePage = Math.max(parseInt(page) || 1, 1);
+
+      const payments = await db.getAllPayments(safeLimit);
+      res.json({ success: true, payments, page: safePage, limit: safeLimit, total: payments.length });
+    } catch (error) {
+      logger.error(`❌ Ошибка получения платежей:`, error.message);
+      res.status(500).json({ success: false, error: error.message });
+    }
   }
-});
+);
 
 // ——————————————————————————————
 // API: УДАЛИТЬ СЕАНС (для бота)
 // ——————————————————————————————
-app.delete('/api/sessions/:id', async (req, res) => {
+app.delete('/api/sessions/:id',
+  rateLimit({ windowMs: 60000, max: 10 }),
+  async (req, res) => {
+    try {
+      const sessionId = parseInt(req.params.id);
+      if (isNaN(sessionId)) {
+        return res.status(400).json({ success: false, error: 'Некорректный ID' });
+      }
+
+      const session = await db.getSession(sessionId);
+      if (!session) {
+        return res.status(404).json({ success: false, error: 'Сеанс не найден' });
+      }
+
+      // Отменяем сеанс
+      await db.updateSessionStatus(sessionId, 'cancelled');
+
+      // Также отменяем связанный платёж (если есть и в MOCK режиме)
+      if (MOCK_MODE && session.payment_id) {
+        await db.updatePaymentStatus(session.payment_id, 'canceled');
+      }
+
+      logger.info(`❌ Сеанс #${sessionId} удалён через API`);
+      res.json({ success: true, message: 'Сеанс отменён' });
+    } catch (error) {
+      logger.error(`❌ Ошибка удаления сеанса:`, error.message);
+      res.status(500).json({ success: false, error: error.message });
+    }
+  }
+);
+
+// ——————————————————————————————
+// API: ОТМЕНИТЬ ЗАПИСЬ ПО PAYMENT_ID (для клиента)
+// ——————————————————————————————
+app.post('/api/cancel-booking',
+  rateLimit({ windowMs: 60000, max: 5 }),
+  [
+    body('paymentId').isString().isLength({ max: 200 }),
+    body('reason').optional().isString().isLength({ max: 500 }),
+    handleValidationErrors
+  ],
+  async (req, res) => {
+    try {
+      const { paymentId, reason } = req.body;
+
+      // Находим сеанс по payment_id
+      const sessions = await new Promise((resolve, reject) => {
+        db.db.all('SELECT id, status FROM sessions WHERE payment_id = ?', [paymentId], (err, rows) => {
+          if (err) reject(err);
+          else resolve(rows);
+        });
+      });
+
+      if (!sessions || sessions.length === 0) {
+        return res.status(404).json({ success: false, error: 'Запись не найдена' });
+      }
+
+      for (const session of sessions) {
+        if (session.status === 'cancelled' || session.status === 'completed') {
+          return res.status(400).json({
+            success: false,
+            error: `Невозможно отменить (статус: ${session.status})`
+          });
+        }
+        await db.updateSessionStatus(session.id, 'cancelled');
+      }
+
+      // Отменяем платёж в MOCK режиме
+      if (MOCK_MODE) {
+        await db.updatePaymentStatus(paymentId, 'canceled');
+      }
+
+      logger.info(`🚫 Запись отменена клиентом: ${paymentId}${reason ? `. Причина: ${sanitizeInput(reason)}` : ''}`);
+
+      res.json({ success: true, message: 'Запись отменена' });
+    } catch (error) {
+      logger.error(`❌ Ошибка отмены записи:`, error.message);
+      res.status(500).json({ success: false, error: error.message });
+    }
+  }
+);
+
+// ——————————————————————————————
+// API: ПОЛУЧИТЬ СПИСОК УСЛУГ И ЦЕН
+// ——————————————————————————————
+app.get('/api/services', (req, res) => {
+  res.json({ success: true, services: config.services, schedule: config.schedule });
+});
+
+// ——————————————————————————————
+// API: РАСПИСАНИЕ (доступные слоты для фронтенда)
+// ——————————————————————————————
+app.get('/api/schedule', async (req, res) => {
   try {
-    await db.deleteSession(parseInt(req.params.id));
-    res.json({ success: true });
+    const { days } = req.query;
+    const safeDays = Math.min(parseInt(days) || config.schedule.daysAhead, 90);
+
+    const allTimes = config.schedule.timeSlots;
+
+    // Получаем занятые слоты из БД
+    const sessions = await db.getAllSessions(500);
+    const busyMap = {};
+    for (const s of sessions) {
+      if (s.status === 'scheduled' || s.status === 'completed') {
+        const dateStr = s.session_date;
+        if (!busyMap[dateStr]) busyMap[dateStr] = [];
+        busyMap[dateStr].push(s.session_time);
+      }
+    }
+
+    // Генерируем свободные слоты
+    const freeSlots = {};
+    const now = new Date();
+    for (let i = 1; i <= safeDays; i++) {
+      const d = new Date(now);
+      d.setDate(now.getDate() + i);
+      const dow = d.getDay();
+      if (config.schedule.excludeWeekends && (dow === 0 || dow === 6)) continue;
+
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      const busy = busyMap[key] || [];
+      const available = allTimes.filter(t => !busy.includes(t));
+
+      if (available.length > 0) {
+        freeSlots[key] = available;
+      }
+    }
+
+    res.json({ success: true, freeSlots, busySlots: busyMap });
   } catch (error) {
-    logger.error(`❌ Ошибка удаления сеанса:`, error.message);
+    logger.error(`❌ Ошибка получения расписания:`, error.message);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -572,40 +812,8 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// ——————————————————————————————
-// CRON: НАПОМИНАНИЯ О СЕАНСАХ
-// ——————————————————————————————
-// Проверяем каждый час
-cron.schedule('0 * * * *', async () => {
-  logger.info('🔔 Проверка напоминаний о сеансах...');
-
-  try {
-    const sessions = await db.getSessionsForReminder();
-
-    for (const session of sessions) {
-      const message = `
-🔔 <b>Напоминание о сеансе!</b>
-
-👤 Клиент: ${session.client_name}
-📞 Телефон: ${session.client_phone}
-📧 Email: ${session.client_email || 'не указан'}
-
-📅 Дата: ${session.session_date}
-🕐 Время: ${session.session_time}
-💰 Оплата: ${session.amount} ₽
-
-${session.comment ? `📝 Комментарий: ${session.comment}` : ''}
-      `.trim();
-
-      await sendTelegramNotification(message);
-      await db.markReminderSent(session.id);
-
-      logger.info(`✅ Напоминание отправлено для сеанса #${session.id}`);
-    }
-  } catch (error) {
-    logger.error(`❌ Ошибка отправки напоминаний:`, error.message);
-  }
-});
+// Напоминания о сеансах отправляются через Telegram-бот (send_reminders)
+// чтобы избежать дублирования уведомлений
 
 // ——————————————————————————————
 // ЗАПУСК СЕРВЕРА

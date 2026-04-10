@@ -16,7 +16,7 @@ window.addEventListener('load', () => {
 });
 
 // Ждём загрузки DOM
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
 
 // ═══════════════════════════════════════════
 // БУРГЕР-МЕНЮ
@@ -92,11 +92,33 @@ function dateKey(d) {
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 }
 
-// ---- РАСПИСАНИЕ (заглушка) ----
-const FREE_SLOTS = {};
-const BUSY_SLOTS = {};
+// ---- РАСПИСАНИЕ (загружается с бэкенда) ----
+let FREE_SLOTS = {};
+let BUSY_SLOTS = {};
+let scheduleLoaded = false;
 
-(function generateSchedule() {
+async function loadSchedule() {
+  try {
+    const response = await fetch('/api/schedule');
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    if (data.success) {
+      FREE_SLOTS = data.freeSlots || {};
+      BUSY_SLOTS = data.busySlots || {};
+      scheduleLoaded = true;
+      console.log(`📅 Расписание загружено: ${Object.keys(FREE_SLOTS).length} дней`);
+      // Перерисовать календарь если шаг 2 активен
+      if (state.currentStep === 2) renderCalendar();
+    }
+  } catch (error) {
+    console.error('❌ Ошибка загрузки расписания:', error);
+    // Fallback: генерируем локально если API недоступен
+    generateScheduleFallback();
+    if (state.currentStep === 2) renderCalendar();
+  }
+}
+
+function generateScheduleFallback() {
   const allTimes = ['10:00','11:30','13:00','14:30','16:00','17:30','19:00'];
   const now = new Date();
   for (let i = 1; i <= 45; i++) {
@@ -108,7 +130,8 @@ const BUSY_SLOTS = {};
     const times = allTimes.filter(() => Math.random() > 0.25);
     if (times.length > 0) FREE_SLOTS[key] = times;
   }
-})();
+  scheduleLoaded = true;
+}
 
 // ---- STATE ----
 const state = {
@@ -245,6 +268,41 @@ if (btnStep2) {
 
 if (btnBack2) btnBack2.addEventListener('click', () => goToStep(2));
 
+// ---- Загрузка расписания с бэкенда ----
+loadSchedule();
+
+// ---- Загрузка услуг с бэкенда ----
+async function loadServices() {
+  try {
+    const response = await fetch('/api/services');
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    if (data.success && data.services) {
+      const select = document.getElementById('service');
+      if (!select) return;
+
+      // Сохраняем первый option (placeholder)
+      const firstOption = select.options[0];
+      select.innerHTML = '';
+      if (firstOption) select.appendChild(firstOption);
+
+      data.services.forEach(svc => {
+        const option = document.createElement('option');
+        option.value = svc.id;
+        option.textContent = `${svc.name} — ${svc.price.toLocaleString('ru-RU')} ₽`;
+        option.dataset.price = svc.price;
+        select.appendChild(option);
+      });
+
+      console.log(`🛎 Услуги загружены: ${data.services.length}`);
+    }
+  } catch (error) {
+    console.error('❌ Ошибка загрузки услуг:', error);
+    // Fallback: услуги остаются из HTML
+  }
+}
+loadServices();
+
 // ---- Календарь ----
 const RU_MONTHS = ['Январь','Февраль','Март','Апрель','Май','Июнь',
                    'Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
@@ -269,6 +327,15 @@ function renderCalendar() {
   const year = state.calYear, month = state.calMonth;
   calMonthLabel.textContent = `${RU_MONTHS[month]} ${year}`;
   calGrid.innerHTML = '';
+
+  // Показываем индикатор загрузки если расписание ещё не загружено
+  if (!scheduleLoaded) {
+    const loadingEl = document.createElement('div');
+    loadingEl.style.cssText = 'grid-column: 1/-1; text-align:center; padding:20px; color:#888;';
+    loadingEl.textContent = 'Загрузка расписания...';
+    calGrid.appendChild(loadingEl);
+    return;
+  }
 
   RU_DOW.forEach(d => {
     const el = document.createElement('div');
@@ -440,10 +507,14 @@ async function createPayment() {
     }
 
     const data = await response.json();
-    console.log('✅ Данные от сервера:', data);
+    console.log('✅ Данные от сервера:', JSON.stringify(data, null, 2));
 
     if (data.success && data.confirmationUrl) {
-      console.log('🔄 Перенаправление на:', data.confirmationUrl);
+      console.log(' Ссылка для оплаты:', data.confirmationUrl);
+      console.log('💰 Сумма:', data.amount, '₽');
+      console.log('🆔 ID платежа:', data.paymentId);
+      console.log(' Режим:', data.mock ? 'MOCK' : 'РЕАЛЬНАЯ ОПЛАТА');
+      console.log('🔄 Перенаправление на страницу оплаты...');
       window.location.href = data.confirmationUrl;
     } else {
       console.error('❌ Нет success или confirmationUrl:', data);

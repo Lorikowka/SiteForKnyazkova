@@ -2,7 +2,19 @@
   "permissions": {
     "allow": [
       "Bash(wmic *)",
-      "Bash(git checkout *)"
+      "Bash(git checkout *)",
+      "Bash(node *)",
+      "Bash(npm audit)",
+      "Bash(npm install)",
+      "Bash(ngrok *)",
+      "Bash(npx *)",
+      "Bash(npm start)",
+      "Bash(lt *)",
+      "Bash(npm run *)",
+      "Bash(do *)",
+      "Bash(git rm *)",
+      "Bash(netstat *)",
+      "Bash(git add *)"
     ]
   },
   "$version": 3
