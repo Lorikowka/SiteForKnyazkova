@@ -331,20 +331,23 @@ app.post('/api/create-payment',
 
       logger.info(`📝 Создание платежа: ${orderNumber}, сумма: ${amount}₽`);
 
-      // Сохраняем платёж в БД
-      await db.createPayment({
-        id: paymentId,
-        order_id: orderNumber,
-        amount,
-        currency: 'RUB',
-        status: 'pending',
-        description,
-        customer_email: customerEmail,
-        customer_phone: customerPhone,
-        customer_name: customerName,
-        service_name: serviceName,
-        metadata: JSON.stringify({ sessionDate, sessionTime, comment })
-      });
+      // В реальном режиме НЕ сохраняем платёж в БД до успешной оплаты
+      // Сохраняем только в MOCK режиме для отслеживания
+      if (MOCK_MODE) {
+        await db.createPayment({
+          id: paymentId,
+          order_id: orderNumber,
+          amount,
+          currency: 'RUB',
+          status: 'pending',
+          description,
+          customer_email: customerEmail,
+          customer_phone: customerPhone,
+          customer_name: customerName,
+          service_name: serviceName,
+          metadata: JSON.stringify({ sessionDate, sessionTime, comment })
+        });
+      }
 
       // MOCK режим
       if (MOCK_MODE) {
@@ -434,7 +437,43 @@ app.post('/api/create-payment',
 app.get('/api/payment/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const payment = await db.getPayment(id);
+    let payment = await db.getPayment(id);
+
+    // В реальном режиме платёж может не быть в БД (создаётся только после успешной оплаты)
+    // Проверяем через API ЮKassa
+    if (!payment && !MOCK_MODE) {
+      try {
+        const checkController = new AbortController();
+        const checkTimeout = setTimeout(() => checkController.abort(), 5000);
+        const ykResponse = await fetch(
+          `${YOOKASSA_BASE_URL}/payments/${id}`,
+          {
+            headers: { 'Authorization': `Basic ${AUTH_HEADER}` },
+            signal: checkController.signal
+          }
+        );
+        clearTimeout(checkTimeout);
+
+        const ykPayment = await ykResponse.json();
+        
+        // Возвращаем статус из ЮKassa
+        return res.json({
+          success: true,
+          payment: {
+            id: ykPayment.id,
+            status: ykPayment.status,
+            amount: ykPayment.amount?.value,
+            currency: ykPayment.amount?.currency,
+            paid: ykPayment.paid,
+            created_at: ykPayment.created_at,
+            paid_at: ykPayment.paid_at
+          }
+        });
+      } catch (ykError) {
+        logger.warn(`Не удалось проверить платёж через ЮKassa: ${ykError.message}`);
+        return res.status(404).json({ success: false, error: 'Платёж не найден' });
+      }
+    }
 
     if (!payment) {
       return res.status(404).json({ success: false, error: 'Платёж не найден' });
@@ -577,13 +616,33 @@ app.post('/api/webhook', async (req, res) => {
         return res.status(200).send('OK');
       }
 
-      // Обновляем статус платежа в БД
-      await db.updatePaymentStatus(object.id, 'succeeded', object.paid_at);
-
-      // Получаем метаданные
+      // Получаем метаданные из платежа ЮKassa
       const metadata = object.metadata ? JSON.parse(object.metadata) : {};
 
-      // Если есть данные о сеансе — сохраняем и отправляем email
+      // Если платёж ещё не в БД (реальный режим) — создаём запись
+      if (!existingPayment) {
+        logger.info(`📝 Создаём запись о платеже в БД: ${object.id}`);
+        await db.createPayment({
+          id: object.id,
+          order_id: metadata.order_id || object.id,
+          amount: object.amount.value,
+          currency: object.amount.currency || 'RUB',
+          status: 'succeeded',
+          description: object.description,
+          customer_email: metadata.customerEmail,
+          customer_phone: metadata.customerPhone,
+          customer_name: metadata.customerName,
+          service_name: metadata.serviceName,
+          payment_method: object.payment_method?.type,
+          paid_at: object.paid_at,
+          metadata: JSON.stringify({ sessionDate: metadata.sessionDate, sessionTime: metadata.sessionTime, comment: metadata.comment })
+        });
+      } else {
+        // Обновляем статус существующего платежа (MOCK режим)
+        await db.updatePaymentStatus(object.id, 'succeeded', object.paid_at);
+      }
+
+      // Сохраняем сеанс в БД
       if (metadata.sessionDatetime && metadata.customerPhone) {
         await db.createSession({
           payment_id: object.id,
@@ -624,27 +683,33 @@ app.post('/api/webhook', async (req, res) => {
         return res.status(200).send('OK');
       }
 
-      // Обновляем статус в БД
-      await db.updatePaymentStatus(object.id, object.status);
+      // В реальном режиме платёж не был сохранён в БД при создании
+      // Поэтому просто логируем отмену
+      if (!existingPayment) {
+        logger.info(`❌ Платёж отменён/истёк (не был сохранён в БД): ${object.id}`);
+      } else {
+        // В MOCK режиме обновляем статус
+        await db.updatePaymentStatus(object.id, object.status);
 
-      // Отменяем связанный сеанс (если есть)
-      try {
-        const sessions = await new Promise((resolve, reject) => {
-          db.db.all('SELECT id FROM sessions WHERE payment_id = ?', [object.id], (err, rows) => {
-            if (err) reject(err);
-            else resolve(rows);
+        // Отменяем связанный сеанс (если есть)
+        try {
+          const sessions = await new Promise((resolve, reject) => {
+            db.db.all('SELECT id FROM sessions WHERE payment_id = ?', [object.id], (err, rows) => {
+              if (err) reject(err);
+              else resolve(rows);
+            });
           });
-        });
 
-        for (const session of sessions) {
-          await db.updateSessionStatus(session.id, 'cancelled');
-          logger.info(`❌ Сеанс #${session.id} отменён (платёж ${object.id})`);
+          for (const session of sessions) {
+            await db.updateSessionStatus(session.id, 'cancelled');
+            logger.info(`❌ Сеанс #${session.id} отменён (платёж ${object.id})`);
+          }
+        } catch (sessionError) {
+          logger.warn(`⚠️ Не удалось отменить сеанс: ${sessionError.message}`);
         }
-      } catch (sessionError) {
-        logger.warn(`⚠️ Не удалось отменить сеанс: ${sessionError.message}`);
-      }
 
-      logger.info(`❌ Платёж отменён/истёк: ${object.id}. Сеанс(ы) переведены в статус 'cancelled'.`);
+        logger.info(`❌ Платёж отменён/истёк: ${object.id}. Сеанс(ы) переведены в статус 'cancelled'.`);
+      }
 
       await sendTelegramNotification(
         `❌ <b>Оплата отменена!</b>\n\n` +
