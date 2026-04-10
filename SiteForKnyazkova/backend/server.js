@@ -132,7 +132,7 @@ app.get('/payment-failed', (req, res) => {
   res.sendFile(path.join(FRONTEND_PATH, 'payment-failed.html'));
 });
 
-app.get('*', (req, res, next) => {
+app.get('*', (req, res, next) => {7
   if (req.path.startsWith('/api/')) return next();
   const filePath = path.join(FRONTEND_PATH, req.path);
   if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
@@ -348,42 +348,13 @@ app.post('/api/create-payment',
 
       // MOCK режим
       if (MOCK_MODE) {
-        // Обновляем статус на succeeded (в MOCK режиме платёж считается успешным)
-        await db.updatePaymentStatus(paymentId, 'succeeded', new Date().toISOString());
+        // В MOCK режиме платёж создаётся со статусом 'pending'
+        // Сеанс НЕ сохраняется до подтверждения оплаты
+        // Для тестирования можно использовать эндпоинт POST /api/mock-payment-success/:id
 
         const mockConfirmationUrl = `${SITE_URL}/payment-check.html?mock=true&amount=${amount}&payment_id=${paymentId}`;
 
-        // Сохраняем сеанс в БД
-        if (sessionDatetime && customerName && customerPhone) {
-          await db.createSession({
-            payment_id: paymentId,
-            client_name: customerName,
-            client_phone: customerPhone,
-            client_email: customerEmail,
-            service_name: serviceName || description,
-            session_date: sessionDate,
-            session_time: sessionTime,
-            session_datetime: sessionDatetime,
-            amount,
-            comment
-          });
-          logger.info(`✅ Сеанс сохранён в БД: ${sessionDatetime}`);
-        }
-
-        // Отправляем email подтверждение
-        if (customerEmail) {
-          await sendEmailConfirmation({
-            email: customerEmail,
-            name: customerName,
-            amount,
-            serviceName: serviceName || description,
-            sessionDate,
-            sessionTime,
-            paymentId
-          });
-        }
-
-        logger.info(`✅ MOCK платёж создан: ${paymentId}`);
+        logger.info(`✅ MOCK платёж создан (ожидает подтверждения): ${paymentId}`);
         return res.json({
           success: true,
           paymentId,
@@ -501,6 +472,75 @@ app.get('/api/payment/:id', async (req, res) => {
     res.json({ success: true, payment });
   } catch (error) {
     logger.error(`❌ Ошибка получения платежа:`, error.message);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ——————————————————————————————
+// API: MOCK — ИМИТАЦИЯ УСПЕШНОЙ ОПЛАТЫ (только для тестирования)
+// ——————————————————————————————
+app.post('/api/mock-payment-success/:id', async (req, res) => {
+  try {
+    if (!MOCK_MODE) {
+      return res.status(403).json({ success: false, error: 'Доступно только в MOCK режиме' });
+    }
+
+    const { id } = req.params;
+    const payment = await db.getPayment(id);
+
+    if (!payment) {
+      return res.status(404).json({ success: false, error: 'Платёж не найден' });
+    }
+
+    if (payment.status === 'succeeded') {
+      return res.status(400).json({ success: false, error: 'Платёж уже обработан' });
+    }
+
+    // Обновляем статус на succeeded
+    await db.updatePaymentStatus(id, 'succeeded', new Date().toISOString());
+
+    // Получаем метаданные
+    const metadata = payment.metadata ? JSON.parse(payment.metadata) : {};
+
+    // Сохраняем сеанс в БД
+    if (metadata.sessionDatetime && payment.customer_name) {
+      await db.createSession({
+        payment_id: id,
+        client_name: payment.customer_name,
+        client_phone: payment.customer_phone,
+        client_email: payment.customer_email,
+        service_name: payment.service_name,
+        session_date: metadata.sessionDate,
+        session_time: metadata.sessionTime,
+        session_datetime: metadata.sessionDatetime,
+        amount: payment.amount,
+        comment: metadata.comment
+      });
+      logger.info(`✅ Сеанс сохранён в БД: ${metadata.sessionDatetime}`);
+    }
+
+    // Отправляем email подтверждение
+    if (payment.customer_email) {
+      await sendEmailConfirmation({
+        email: payment.customer_email,
+        name: payment.customer_name,
+        amount: payment.amount,
+        serviceName: payment.service_name,
+        sessionDate: metadata.sessionDate,
+        sessionTime: metadata.sessionTime,
+        paymentId: id
+      });
+    }
+
+    logger.info(`✅ MOCK платёж подтверждён: ${id}`);
+    res.json({
+      success: true,
+      paymentId: id,
+      status: 'succeeded',
+      message: 'Платёж успешно подтверждён (MOCK режим)'
+    });
+  } catch (error) {
+    logger.error(`❌ Ошибка MOCK подтверждения:`, error.message);
     res.status(500).json({ success: false, error: error.message });
   }
 });

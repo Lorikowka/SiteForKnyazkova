@@ -85,6 +85,7 @@
 <script>
   const urlParams = new URLSearchParams(window.location.search);
   const paymentId = urlParams.get('payment_id');
+  const isMock = urlParams.get('mock') === 'true';
 
   let retries = 0;
   const MAX_RETRIES = 10;
@@ -96,11 +97,47 @@
     });
   }
 
+  // В MOCK режиме автоматически подтверждаем платёж
+  function confirmMockPayment() {
+    if (!isMock || !paymentId) return Promise.resolve(false);
+
+    return fetch(`/api/mock-payment-success/${encodeURIComponent(paymentId)}`, {
+      method: 'POST'
+    })
+    .then(res => res.json())
+    .then(data => {
+      if (data.success) {
+        console.log('✅ MOCK платёж подтверждён');
+        return true;
+      }
+      return false;
+    })
+    .catch(err => {
+      console.error('❌ Ошибка подтверждения MOCK платежа:', err);
+      return false;
+    });
+  }
+
   function checkPayment() {
     if (!paymentId) {
       document.getElementById('error-title').textContent = 'Оплата отменена';
       document.getElementById('error-text').textContent = 'Вы не завершили оплату. Попробуйте записаться снова.';
       showState('error');
+      return;
+    }
+
+    // В MOCK режиме сначала подтверждаем платёж
+    if (isMock && retries === 0) {
+      confirmMockPayment().then(confirmed => {
+        if (confirmed) {
+          // После подтверждения проверяем статус
+          setTimeout(checkPayment, 500);
+        } else {
+          document.getElementById('error-title').textContent = 'Ошибка';
+          document.getElementById('error-text').textContent = 'Не удалось подтвердить MOCK платёж.';
+          showState('error');
+        }
+      });
       return;
     }
 
