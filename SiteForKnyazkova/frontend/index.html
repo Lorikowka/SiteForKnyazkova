@@ -207,10 +207,11 @@
         </div>
         <div class="payment-info">
           <div class="payment-row"><span>Получатель:</span><strong>ИП Князькова Екатерина Сергеевна</strong></div>
-          <div class="payment-row"><span>ИНН:</span><strong>XXXXXXXXXXXX</strong></div>
-          <div class="payment-row"><span>Расчётный счёт:</span><strong>XXXXXXXXXXXXXXXXXXX</strong></div>
+          <!-- TODO: Замените на реальные реквизиты перед публикацией сайта -->
+          <div class="payment-row"><span>ИНН:</span><strong><!-- УКАЖИТЕ РЕАЛЬНЫЙ ИНН -->XXXXXXXXXXXX</strong></div>
+          <div class="payment-row"><span>Расчётный счёт:</span><strong><!-- УКАЖИТЕ РЕАЛЬНЫЙ Р/С -->XXXXXXXXXXXXXXXXXXX</strong></div>
           <div class="payment-row"><span>Платёжный сервис:</span><strong>ЮКасса (YooKassa)</strong></div>
-          <div class="payment-row"><span>ID магазина:</span><strong>XXXXXXXX</strong></div>
+          <div class="payment-row"><span>ID магазина:</span><strong><!-- УКАЖИТЕ ID МАГАЗИНА ЮKASSA -->XXXXXXXX</strong></div>
         </div>
         <div class="payment-sber">
           <button class="yoo-btn" id="yoo-pay-btn">
@@ -262,10 +263,11 @@
     <div class="footer-requisites">
       <p class="footer-section-title">Реквизиты</p>
       <p>ИП Князькова Екатерина Сергеевна</p>
-      <p>ИНН: XXXXXXXXXXXX</p>
-      <p>ОГРН: XXXXXXXXXXXXX</p>
-      <p>р/с: XXXXXXXXXXXXXXXXXXX</p>
-      <p>БИК: XXXXXXXXX</p>
+      <!-- TODO: Замените на реальные реквизиты перед публикацией сайта -->
+      <p>ИНН: <!-- УКАЖИТЕ РЕАЛЬНЫЙ ИНН -->XXXXXXXXXXXX</p>
+      <p>ОГРНИП: <!-- УКАЖИТЕ РЕАЛЬНЫЙ ОГРНИП -->XXXXXXXXXXX</p>
+      <p>р/с: <!-- УКАЖИТЕ РЕАЛЬНЫЙ Р/С -->XXXXXXXXXXXXXXXXXXX</p>
+      <p>БИК: <!-- УКАЖИТЕ РЕАЛЬНЫЙ БИК -->XXXXXXXXX</p>
     </div>
   </div>
   <div class="footer-bottom">
@@ -274,5 +276,20 @@
 </footer>
 
 <script src="js/main.js"></script>
+<script>
+// Показываем модальное окно если ?payment_success=true
+(function checkPaymentSuccess() {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('payment_success') === 'true') {
+    // Удаляем параметры из URL
+    window.history.replaceState({}, '', window.location.pathname);
+    // Показываем модальное окно
+    setTimeout(() => {
+      const modal = document.getElementById('success-modal');
+      if (modal) modal.classList.remove('hidden');
+    }, 500);
+  }
+})();
+</script>
 </body>
 </html>

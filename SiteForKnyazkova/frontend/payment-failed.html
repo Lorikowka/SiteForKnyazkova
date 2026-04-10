@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ошибка оплаты</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@500;700&family=Inter:wght@300;400;500&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Inter', sans-serif;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 40px 20px;
+      background: linear-gradient(135deg, #f5f0eb 0%, #e8e0d9 100%);
+    }
+    .card {
+      background: white;
+      border-radius: 16px;
+      padding: 48px 40px;
+      max-width: 520px;
+      width: 100%;
+      text-align: center;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.08);
+    }
+    .icon {
+      width: 80px; height: 80px;
+      margin: 0 auto 24px;
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 40px; color: white;
+      background: linear-gradient(135deg, #f44336, #e91e63);
+    }
+    h1 { font-family: 'Playfair Display',serif; font-size: 28px; font-weight: 700; color: #2c2c2c; margin-bottom: 16px; }
+    p { font-size: 16px; line-height: 1.6; color: #666; margin-bottom: 24px; }
+    .payment-details {
+      background: #f9f6f3;
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 24px;
+      text-align: left;
+    }
+    .payment-details .row {
+      display: flex;
+      justify-content: space-between;
+      padding: 6px 0;
+      font-size: 14px;
+    }
+    .payment-details .row span:first-child { color: #888; }
+    .payment-details .row strong { color: #333; }
+    .btn {
+      display: inline-block; color: white; padding: 14px 32px; border-radius: 8px;
+      text-decoration: none; font-weight: 500; transition: transform 0.2s, box-shadow 0.2s;
+      border: none; cursor: pointer; font-size: 16px; margin: 4px;
+    }
+    .btn.primary { background: linear-gradient(135deg,#667eea,#764ba2); }
+    .btn.primary:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(102,126,234,0.4); }
+    .btn.error { background: linear-gradient(135deg,#f44336,#e91e63); }
+    .btn.error:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(244,67,54,0.4); }
+    .support-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: #667eea;
+      text-decoration: none;
+      font-size: 14px;
+      margin-top: 16px;
+    }
+    .support-link:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+
+<div class="card">
+  <div class="icon">✕</div>
+  <h1>Платёж не прошёл</h1>
+  <p>К сожалению, оплата не была завершена. Это могло произойти по разным причинам — от ошибки банка до истечения времени ожидания.</p>
+
+  <div class="payment-details" id="details" style="display:none;">
+    <div class="row"><span>Статус:</span><strong id="detail-status">—</strong></div>
+    <div class="row"><span>Сумма:</span><strong id="detail-amount">—</strong></div>
+    <div class="row"><span>ID платежа:</span><strong id="detail-id">—</strong></div>
+  </div>
+
+  <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;">
+    <a href="index.html#payment" class="btn error">Попробовать снова</a>
+    <a href="index.html" class="btn primary">На главную</a>
+  </div>
+
+  <a href="https://t.me/Ekaterina_K" target="_blank" class="support-link">
+    💬 Написать в Telegram для поддержки
+  </a>
+</div>
+
+<script>
+  const urlParams = new URLSearchParams(window.location.search);
+  const paymentId = urlParams.get('payment_id');
+
+  if (paymentId) {
+    fetch(`/api/payment/${encodeURIComponent(paymentId)}`)
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && data.payment) {
+          const p = data.payment;
+          document.getElementById('detail-status').textContent = p.status || '—';
+          document.getElementById('detail-amount').textContent = p.amount ? `${p.amount} ₽` : '—';
+          document.getElementById('detail-id').textContent = p.id || '—';
+          document.getElementById('details').style.display = 'block';
+        }
+      })
+      .catch(() => {
+        // Не показываем детали если ошибка
+      });
+  }
+</script>
+</body>
+</html>

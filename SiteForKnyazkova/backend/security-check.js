@@ -234,7 +234,7 @@ function checkServerSecurity() {
 function checkFrontendSecurity() {
   log.section('🌐 Анализ frontend');
   
-  const indexPath = path.join(__dirname, '..', 'site', 'index.html');
+  const indexPath = path.join(__dirname, '..', 'frontend', 'index.html');
   if (!fs.existsSync(indexPath)) {
     log.warn('index.html не найден (пропускаем проверку)');
     return;
@@ -262,7 +262,7 @@ function checkFrontendSecurity() {
   });
   
   // Проверяем main.js
-  const mainJsPath = path.join(__dirname, '..', 'site', 'js', 'main.js');
+  const mainJsPath = path.join(__dirname, '..', 'frontend', 'js', 'main.js');
   if (fs.existsSync(mainJsPath)) {
     const mainJs = fs.readFileSync(mainJsPath, 'utf8');
     

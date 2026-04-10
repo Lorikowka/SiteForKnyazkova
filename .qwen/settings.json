@@ -1,8 +1,17 @@
 {
   "permissions": {
     "allow": [
-      "Bash(wmic *)",
-      "Bash(git checkout *)"
+      "Bash(npm start)",
+      "Bash(timeout *)",
+      "Bash(curl *)",
+      "Bash(taskkill *)",
+      "Bash(type *)",
+      "Bash(findstr *)",
+      "Bash(powershell *)",
+      "Bash(git reset *)",
+      "Bash(git rm *)",
+      "Bash(dir *)",
+      "Bash(rmdir *)"
     ]
   },
   "$version": 3
