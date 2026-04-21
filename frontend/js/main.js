@@ -50,7 +50,9 @@ if (burgerBtn) {
 }
 if (navOverlay) navOverlay.addEventListener('click', closeMenu);
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeMenu(); });
-mainNav.querySelectorAll('a').forEach(link => link.addEventListener('click', closeMenu));
+if (mainNav) {
+  mainNav.querySelectorAll('a').forEach(link => link.addEventListener('click', closeMenu));
+}
 
 // ═══════════════════════════════════════════
 // ПЛАВНЫЙ СКРОЛЛ
@@ -96,6 +98,7 @@ function dateKey(d) {
 let FREE_SLOTS = {};
 let BUSY_SLOTS = {};
 let scheduleLoaded = false;
+let scheduleErrorMessage = '';
 
 async function loadSchedule() {
   try {
@@ -106,31 +109,19 @@ async function loadSchedule() {
       FREE_SLOTS = data.freeSlots || {};
       BUSY_SLOTS = data.busySlots || {};
       scheduleLoaded = true;
+      scheduleErrorMessage = '';
       console.log(`📅 Расписание загружено: ${Object.keys(FREE_SLOTS).length} дней`);
       // Перерисовать календарь если шаг 2 активен
       if (state.currentStep === 2) renderCalendar();
     }
   } catch (error) {
     console.error('❌ Ошибка загрузки расписания:', error);
-    // Fallback: генерируем локально если API недоступен
-    generateScheduleFallback();
+    FREE_SLOTS = {};
+    BUSY_SLOTS = {};
+    scheduleLoaded = true;
+    scheduleErrorMessage = 'Не удалось загрузить актуальное расписание. Попробуйте обновить страницу чуть позже.';
     if (state.currentStep === 2) renderCalendar();
   }
-}
-
-function generateScheduleFallback() {
-  const allTimes = ['10:00','11:30','13:00','14:30','16:00','17:30','19:00'];
-  const now = new Date();
-  for (let i = 1; i <= 45; i++) {
-    const d = new Date(now);
-    d.setDate(now.getDate() + i);
-    const dow = d.getDay();
-    if (dow === 0 || dow === 6) continue;
-    const key   = dateKey(d);
-    const times = allTimes.filter(() => Math.random() > 0.25);
-    if (times.length > 0) FREE_SLOTS[key] = times;
-  }
-  scheduleLoaded = true;
 }
 
 // ---- STATE ----
@@ -337,6 +328,17 @@ function renderCalendar() {
     return;
   }
 
+  if (scheduleErrorMessage) {
+    const errorEl = document.createElement('div');
+    errorEl.style.cssText = 'grid-column: 1/-1; text-align:center; padding:20px; color:#b33;';
+    errorEl.textContent = scheduleErrorMessage;
+    calGrid.appendChild(errorEl);
+    timeSlotsCont.innerHTML = '';
+    slotsHint.style.display = 'block';
+    slotsHint.textContent = scheduleErrorMessage;
+    return;
+  }
+
   RU_DOW.forEach(d => {
     const el = document.createElement('div');
     el.className = 'cal-day-name';
@@ -391,6 +393,13 @@ function selectDate(d) {
 }
 
 function renderTimeSlots(d) {
+  if (scheduleErrorMessage) {
+    timeSlotsCont.innerHTML = '';
+    slotsHint.style.display = 'block';
+    slotsHint.textContent = scheduleErrorMessage;
+    return;
+  }
+
   const key   = dateKey(d);
   const slots = FREE_SLOTS[key] || [];
   const busy  = BUSY_SLOTS[key] || [];
@@ -445,6 +454,24 @@ function fillSummary() {
 const BACKEND_URL = ''; // Пустая строка = тот же origin
 // Если фронт на другом порту, укажите: 'http://localhost:1488'
 
+function formatLocalSessionDate(date) {
+  return date.toISOString().slice(0, 10);
+}
+
+function formatLocalSessionDatetime(date, time) {
+  const [hours, minutes] = time.split(':').map(Number);
+  const localDate = new Date(date);
+  localDate.setHours(hours, minutes, 0, 0);
+
+  const year = localDate.getFullYear();
+  const month = String(localDate.getMonth() + 1).padStart(2, '0');
+  const day = String(localDate.getDate()).padStart(2, '0');
+  const normalizedHours = String(localDate.getHours()).padStart(2, '0');
+  const normalizedMinutes = String(localDate.getMinutes()).padStart(2, '0');
+
+  return `${year}-${month}-${day}T${normalizedHours}:${normalizedMinutes}:00`;
+}
+
 async function createPayment() {
   // Валидация
   if (!state.fio || !state.phone) {
@@ -462,9 +489,9 @@ async function createPayment() {
 
   try {
     // Форматируем дату и время для БД
-    const sessionDate = state.selectedDate.toLocaleDateString('ru-RU');
+    const sessionDate = formatLocalSessionDate(state.selectedDate);
     const sessionTime = state.selectedTime;
-    const sessionDatetime = state.selectedDate.toISOString() + 'T' + state.selectedTime + ':00';
+    const sessionDatetime = formatLocalSessionDatetime(state.selectedDate, state.selectedTime);
 
     console.log('📝 Создаём платёж...', {
       amount: state.price,

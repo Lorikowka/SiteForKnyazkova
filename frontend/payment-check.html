@@ -85,6 +85,7 @@
 <script>
   const urlParams = new URLSearchParams(window.location.search);
   const paymentId = urlParams.get('payment_id');
+  const paymentToken = urlParams.get('token');
 
   let retries = 0;
   const MAX_RETRIES = 10;
@@ -104,7 +105,10 @@
       return;
     }
 
-    fetch(`/api/payment/${encodeURIComponent(paymentId)}`)
+    const params = new URLSearchParams();
+    if (paymentToken) params.set('token', paymentToken);
+
+    fetch(`/api/payment/${encodeURIComponent(paymentId)}?${params.toString()}`)
       .then(res => res.json())
       .then(data => {
         if (data.success && data.payment) {

@@ -145,7 +145,11 @@ function createPayment(data) {
 function updatePaymentStatus(paymentId, status, paidAt = null) {
   return new Promise((resolve, reject) => {
     const sql = `UPDATE payments SET status = ?, paid_at = ? WHERE id = ?`;
-    db.run(sql, [status, paidAt || new Date().toISOString(), paymentId], function(err) {
+    const nextPaidAt = status === 'succeeded'
+      ? (paidAt || new Date().toISOString())
+      : null;
+
+    db.run(sql, [status, nextPaidAt, paymentId], function(err) {
       if (err) reject(err);
       else resolve({ changes: this.changes });
     });

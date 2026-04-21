@@ -119,7 +119,12 @@ const strictLimiter = rateLimit({
   message: { success: false, error: 'Слишком много попыток' }
 });
 
-app.use(express.json({ limit: '10kb' }));
+app.use(express.json({
+  limit: '10kb',
+  verify: (req, res, buf) => {
+    req.rawBody = buf.toString('utf8');
+  }
+}));
 app.use(express.urlencoded({ extended: true, limit: '10kb' }));
 
 // ——————————————————————————————
@@ -151,8 +156,8 @@ app.get('*', (req, res, next) => {
  */
 function verifyWebhookSignature(body, signature) {
   if (!YOOKASSA_WEBHOOK_SECRET) {
-    logger.warn('⚠️ YOOKASSA_WEBHOOK_SECRET не установлен — проверка подписи пропущена');
-    return true; // Временно пропускаем если ключ не настроен
+    logger.error('YOOKASSA_WEBHOOK_SECRET не установлен — webhook отклонён');
+    return false;
   }
 
   if (!signature) {
@@ -161,7 +166,7 @@ function verifyWebhookSignature(body, signature) {
   }
 
   const hmac = crypto.createHmac('sha256', YOOKASSA_WEBHOOK_SECRET);
-  hmac.update(JSON.stringify(body));
+  hmac.update(body);
   const calculatedSignature = hmac.digest('hex');
 
   return crypto.timingSafeEqual(
@@ -188,8 +193,8 @@ const handleValidationErrors = (req, res, next) => {
  */
 function requireApiKey(req, res, next) {
   if (!API_KEY) {
-    logger.warn('⚠️ API_KEY не установлен — админ-эндпоинты без защиты');
-    return next();
+    logger.error('API_KEY не установлен — админ-эндпоинт заблокирован');
+    return res.status(503).json({ success: false, error: 'Админ-API временно недоступен' });
   }
 
   const providedKey = req.headers['x-api-key'];
@@ -198,6 +203,33 @@ function requireApiKey(req, res, next) {
     return res.status(401).json({ success: false, error: 'Неверный ключ авторизации' });
   }
   next();
+}
+
+function safeJsonParse(value, fallback = {}) {
+  if (!value) return fallback;
+  if (typeof value === 'object') return value;
+
+  try {
+    return JSON.parse(value);
+  } catch (error) {
+    logger.warn(`Не удалось распарсить JSON metadata: ${error.message}`);
+    return fallback;
+  }
+}
+
+function getStoredPaymentMetadata(paymentRow) {
+  return safeJsonParse(paymentRow?.metadata, {});
+}
+
+function canAccessPaymentDetails(req, paymentRow) {
+  const providedApiKey = req.headers['x-api-key'];
+  if (API_KEY && providedApiKey === API_KEY) {
+    return true;
+  }
+
+  const metadata = getStoredPaymentMetadata(paymentRow);
+  const providedToken = typeof req.query.token === 'string' ? req.query.token : '';
+  return Boolean(providedToken && metadata.statusToken && providedToken === metadata.statusToken);
 }
 
 async function sendTelegramNotification(message) {
@@ -328,6 +360,21 @@ app.post('/api/create-payment',
 
       const orderNumber = orderId || `order_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
       const paymentId = `pay_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+      const statusToken = crypto.randomBytes(16).toString('hex');
+      const cancelToken = crypto.randomBytes(16).toString('hex');
+      const paymentMetadata = {
+        orderId: orderNumber,
+        customerEmail,
+        customerName,
+        customerPhone,
+        serviceName: serviceName || description,
+        sessionDate,
+        sessionTime,
+        sessionDatetime,
+        comment,
+        statusToken,
+        cancelToken
+      };
 
       logger.info(`📝 Создание платежа: ${orderNumber}, сумма: ${amount}₽`);
 
@@ -343,7 +390,7 @@ app.post('/api/create-payment',
         customer_phone: customerPhone,
         customer_name: customerName,
         service_name: serviceName,
-        metadata: JSON.stringify({ sessionDate, sessionTime, comment })
+        metadata: paymentMetadata
       });
 
       // MOCK режим
@@ -351,7 +398,7 @@ app.post('/api/create-payment',
         // Обновляем статус на succeeded (в MOCK режиме платёж считается успешным)
         await db.updatePaymentStatus(paymentId, 'succeeded', new Date().toISOString());
 
-        const mockConfirmationUrl = `${SITE_URL}/payment-check.html?mock=true&amount=${amount}&payment_id=${paymentId}`;
+        const mockConfirmationUrl = `${SITE_URL}/payment-check.html?mock=true&amount=${amount}&payment_id=${paymentId}&token=${statusToken}`;
 
         // Сохраняем сеанс в БД
         if (sessionDatetime && customerName && customerPhone) {
@@ -408,10 +455,10 @@ app.post('/api/create-payment',
           body: JSON.stringify({
             amount: { value: amount.toString(), currency: 'RUB' },
             description,
-            metadata: { order_id: orderNumber },
+            metadata: paymentMetadata,
             confirmation: {
               type: 'redirect',
-              return_url: `${SITE_URL}/payment-check.html?payment_id=${paymentId}`
+              return_url: `${SITE_URL}/payment-check.html?payment_id=${paymentId}&token=${statusToken}`
             },
             capture: true,
             paid: false
@@ -462,6 +509,11 @@ app.get('/api/payment/:id', async (req, res) => {
       return res.status(404).json({ success: false, error: 'Платёж не найден' });
     }
 
+    if (!canAccessPaymentDetails(req, payment)) {
+      logger.warn(`🚫 Запрещён доступ к платёжным данным ${id}`);
+      return res.status(403).json({ success: false, error: 'Доступ запрещён' });
+    }
+
     // Если статус pending и не MOCK — проверяем через API ЮKassa
     if (payment.status === 'pending' && !MOCK_MODE) {
       try {
@@ -491,7 +543,18 @@ app.get('/api/payment/:id', async (req, res) => {
       }
     }
 
-    res.json({ success: true, payment });
+    const publicPayment = {
+      id: payment.id,
+      status: payment.status,
+      amount: payment.amount,
+      currency: payment.currency,
+      description: payment.description,
+      created_at: payment.created_at,
+      paid_at: payment.paid_at,
+      service_name: payment.service_name
+    };
+
+    res.json({ success: true, payment: publicPayment });
   } catch (error) {
     logger.error(`❌ Ошибка получения платежа:`, error.message);
     res.status(500).json({ success: false, error: error.message });
@@ -512,7 +575,7 @@ app.post('/api/webhook', async (req, res) => {
 
     // Проверяем HMAC-SHA256 подпись
     const signature = req.headers['x-yookassa-signature'];
-    if (!verifyWebhookSignature(event, signature)) {
+    if (!verifyWebhookSignature(req.rawBody || '', signature)) {
       logger.warn('🚨 Неверная подпись webhook! Запрос отклонён.');
       return res.status(401).send('Invalid signature');
     }
@@ -534,7 +597,7 @@ app.post('/api/webhook', async (req, res) => {
       await db.updatePaymentStatus(object.id, 'succeeded', object.paid_at);
 
       // Получаем метаданные
-      const metadata = object.metadata ? JSON.parse(object.metadata) : {};
+      const metadata = getStoredPaymentMetadata(existingPayment);
 
       // Если есть данные о сеансе — сохраняем и отправляем email
       if (metadata.sessionDatetime && metadata.customerPhone) {
@@ -663,6 +726,7 @@ app.get('/api/payments',
 // API: УДАЛИТЬ СЕАНС (для бота)
 // ——————————————————————————————
 app.delete('/api/sessions/:id',
+  requireApiKey,
   rateLimit({ windowMs: 60000, max: 10 }),
   async (req, res) => {
     try {
@@ -700,12 +764,24 @@ app.post('/api/cancel-booking',
   rateLimit({ windowMs: 60000, max: 5 }),
   [
     body('paymentId').isString().isLength({ max: 200 }),
+    body('token').isString().isLength({ min: 16, max: 200 }),
     body('reason').optional().isString().isLength({ max: 500 }),
     handleValidationErrors
   ],
   async (req, res) => {
     try {
-      const { paymentId, reason } = req.body;
+      const { paymentId, token, reason } = req.body;
+      const payment = await db.getPayment(paymentId);
+
+      if (!payment) {
+        return res.status(404).json({ success: false, error: 'Платёж не найден' });
+      }
+
+      const metadata = getStoredPaymentMetadata(payment);
+      if (!metadata.cancelToken || metadata.cancelToken !== token) {
+        logger.warn(`🚫 Неверный токен отмены для платежа ${paymentId}`);
+        return res.status(403).json({ success: false, error: 'Доступ запрещён' });
+      }
 
       // Находим сеанс по payment_id
       const sessions = await new Promise((resolve, reject) => {
