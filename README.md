@@ -114,6 +114,7 @@ BACKEND_URL=http://localhost:1488
 - ✅ Сохранение сеансов
 - ✅ Автоматические напоминания
 - ✅ API для бота
+- ✅ Админ-API для смены статуса сеанса и выборки напоминаний
 
 ### Telegram бот
 - ✅ Просмотр сеансов
@@ -136,8 +137,12 @@ BACKEND_URL=http://localhost:1488
 | Endpoint | Метод | Описание |
 |----------|-------|----------|
 | `/api/create-payment` | POST | Создать платёж |
+| `/api/payment/:id?token=...` | GET | Проверить статус платёжа по одноразовому токену |
 | `/api/sessions` | GET | Получить сеансы |
+| `/api/sessions/:id/status` | PATCH | Обновить статус сеанса |
 | `/api/payments` | GET | Получить платежи |
+| `/api/reminders/due` | GET | Получить сеансы для напоминаний |
+| `/api/reminders/:id/mark-sent` | POST | Отметить напоминание как отправленное |
 | `/api/health` | GET | Проверка сервера |
 | `/api/webhook` | POST | Webhook ЮKassa |
 

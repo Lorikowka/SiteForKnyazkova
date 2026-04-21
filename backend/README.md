@@ -211,6 +211,33 @@ if (signature !== calculatedSignature) {
 
 ---
 
+### PATCH `/api/sessions/:id/status`
+
+Админ-метод для смены статуса сеанса. Требует `X-API-Key`.
+
+**Тело запроса:**
+```json
+{
+  "status": "completed"
+}
+```
+
+Допустимые значения: `scheduled`, `completed`, `cancelled`.
+
+---
+
+### GET `/api/reminders/due`
+
+Возвращает сеансы, для которых пора отправить напоминание. Требует `X-API-Key`.
+
+---
+
+### POST `/api/reminders/:id/mark-sent`
+
+Помечает напоминание как отправленное. Требует `X-API-Key`.
+
+---
+
 ## 🔍 Проверка Безопасности
 
 ### Автоматическая проверка:

@@ -685,15 +685,28 @@ app.get('/api/sessions',
   async (req, res) => {
     try {
       const { limit = 50, past = 'false', page = 1 } = req.query;
+      const isPast = past === 'true';
       const safeLimit = Math.min(parseInt(limit) || 50, 200);
       const safePage = Math.max(parseInt(page) || 1, 1);
       const offset = (safePage - 1) * safeLimit;
 
-      const sessions = past === 'true'
-        ? await db.getPastSessions(safeLimit)
-        : await db.getAllSessions(safeLimit);
+      const [sessions, total] = await Promise.all([
+        isPast
+          ? db.getPastSessions(safeLimit, offset)
+          : db.getAllSessions(safeLimit, offset),
+        db.countSessions({ past: isPast })
+      ]);
 
-      res.json({ success: true, sessions, page: safePage, limit: safeLimit, total: sessions.length });
+      res.json({
+        success: true,
+        sessions,
+        pagination: {
+          page: safePage,
+          limit: safeLimit,
+          total,
+          totalPages: Math.max(Math.ceil(total / safeLimit), 1)
+        }
+      });
     } catch (error) {
       logger.error(`❌ Ошибка получения сеансов:`, error.message);
       res.status(500).json({ success: false, error: error.message });
@@ -712,9 +725,23 @@ app.get('/api/payments',
       const { limit = 20, page = 1 } = req.query;
       const safeLimit = Math.min(parseInt(limit) || 20, 100);
       const safePage = Math.max(parseInt(page) || 1, 1);
+      const offset = (safePage - 1) * safeLimit;
 
-      const payments = await db.getAllPayments(safeLimit);
-      res.json({ success: true, payments, page: safePage, limit: safeLimit, total: payments.length });
+      const [payments, total] = await Promise.all([
+        db.getAllPayments(safeLimit, offset),
+        db.countPayments()
+      ]);
+
+      res.json({
+        success: true,
+        payments,
+        pagination: {
+          page: safePage,
+          limit: safeLimit,
+          total,
+          totalPages: Math.max(Math.ceil(total / safeLimit), 1)
+        }
+      });
     } catch (error) {
       logger.error(`❌ Ошибка получения платежей:`, error.message);
       res.status(500).json({ success: false, error: error.message });
@@ -752,6 +779,41 @@ app.delete('/api/sessions/:id',
       res.json({ success: true, message: 'Сеанс отменён' });
     } catch (error) {
       logger.error(`❌ Ошибка удаления сеанса:`, error.message);
+      res.status(500).json({ success: false, error: error.message });
+    }
+  }
+);
+
+// ——————————————————————————————————————————————
+// API: ОБНОВИТЬ СТАТУС СЕАНСА (для админ-клиента / будущего VK-бота)
+// ——————————————————————————————————————————————
+app.patch('/api/sessions/:id/status',
+  requireApiKey,
+  rateLimit({ windowMs: 60000, max: 30 }),
+  [
+    body('status').isIn(['scheduled', 'completed', 'cancelled']),
+    handleValidationErrors
+  ],
+  async (req, res) => {
+    try {
+      const sessionId = parseInt(req.params.id, 10);
+      const { status } = req.body;
+
+      if (isNaN(sessionId)) {
+        return res.status(400).json({ success: false, error: 'Некорректный ID' });
+      }
+
+      const session = await db.getSession(sessionId);
+      if (!session) {
+        return res.status(404).json({ success: false, error: 'Сеанс не найден' });
+      }
+
+      await db.updateSessionStatus(sessionId, status);
+      logger.info(`🛠️ Статус сеанса #${sessionId} обновлён: ${session.status} -> ${status}`);
+
+      res.json({ success: true, message: 'Статус обновлён', sessionId, status });
+    } catch (error) {
+      logger.error(`❌ Ошибка обновления статуса сеанса:`, error.message);
       res.status(500).json({ success: false, error: error.message });
     }
   }
@@ -815,6 +877,47 @@ app.post('/api/cancel-booking',
       res.json({ success: true, message: 'Запись отменена' });
     } catch (error) {
       logger.error(`❌ Ошибка отмены записи:`, error.message);
+      res.status(500).json({ success: false, error: error.message });
+    }
+  }
+);
+
+// ——————————————————————————————————————————————
+// API: СЕАНСЫ ДЛЯ НАПОМИНАНИЙ
+// ——————————————————————————————————————————————
+app.get('/api/reminders/due',
+  requireApiKey,
+  rateLimit({ windowMs: 60000, max: 30 }),
+  async (req, res) => {
+    try {
+      const sessions = await db.getSessionsForReminder();
+      res.json({ success: true, sessions, total: sessions.length });
+    } catch (error) {
+      logger.error(`❌ Ошибка получения напоминаний:`, error.message);
+      res.status(500).json({ success: false, error: error.message });
+    }
+  }
+);
+
+app.post('/api/reminders/:id/mark-sent',
+  requireApiKey,
+  rateLimit({ windowMs: 60000, max: 30 }),
+  async (req, res) => {
+    try {
+      const sessionId = parseInt(req.params.id, 10);
+      if (isNaN(sessionId)) {
+        return res.status(400).json({ success: false, error: 'Некорректный ID' });
+      }
+
+      const session = await db.getSession(sessionId);
+      if (!session) {
+        return res.status(404).json({ success: false, error: 'Сеанс не найден' });
+      }
+
+      await db.markReminderSent(sessionId);
+      res.json({ success: true, message: 'Напоминание отмечено как отправленное', sessionId });
+    } catch (error) {
+      logger.error(`❌ Ошибка отметки напоминания:`, error.message);
       res.status(500).json({ success: false, error: error.message });
     }
   }

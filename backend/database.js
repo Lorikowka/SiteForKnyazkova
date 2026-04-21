@@ -172,12 +172,21 @@ function getPayment(paymentId) {
 /**
  * Получить все платежи
  */
-function getAllPayments(limit = 50) {
+function getAllPayments(limit = 50, offset = 0) {
   return new Promise((resolve, reject) => {
-    const sql = `SELECT * FROM payments ORDER BY created_at DESC LIMIT ?`;
-    db.all(sql, [limit], (err, rows) => {
+    const sql = `SELECT * FROM payments ORDER BY created_at DESC LIMIT ? OFFSET ?`;
+    db.all(sql, [limit, offset], (err, rows) => {
       if (err) reject(err);
       else resolve(rows);
+    });
+  });
+}
+
+function countPayments() {
+  return new Promise((resolve, reject) => {
+    db.get('SELECT COUNT(*) AS total FROM payments', [], (err, row) => {
+      if (err) reject(err);
+      else resolve(row?.total || 0);
     });
   });
 }
@@ -221,15 +230,16 @@ function createSession(data) {
 /**
  * Получить все сеансы
  */
-function getAllSessions(limit = 100) {
+function getAllSessions(limit = 100, offset = 0) {
   return new Promise((resolve, reject) => {
     const sql = `
       SELECT * FROM sessions 
       WHERE session_datetime >= datetime('now', 'localtime')
       ORDER BY session_datetime ASC 
       LIMIT ?
+      OFFSET ?
     `;
-    db.all(sql, [limit], (err, rows) => {
+    db.all(sql, [limit, offset], (err, rows) => {
       if (err) reject(err);
       else resolve(rows);
     });
@@ -239,17 +249,31 @@ function getAllSessions(limit = 100) {
 /**
  * Получить прошедшие сеансы
  */
-function getPastSessions(limit = 50) {
+function getPastSessions(limit = 50, offset = 0) {
   return new Promise((resolve, reject) => {
     const sql = `
       SELECT * FROM sessions 
       WHERE session_datetime < datetime('now', 'localtime')
       ORDER BY session_datetime DESC 
       LIMIT ?
+      OFFSET ?
     `;
-    db.all(sql, [limit], (err, rows) => {
+    db.all(sql, [limit, offset], (err, rows) => {
       if (err) reject(err);
       else resolve(rows);
+    });
+  });
+}
+
+function countSessions({ past = false } = {}) {
+  return new Promise((resolve, reject) => {
+    const sql = past
+      ? `SELECT COUNT(*) AS total FROM sessions WHERE session_datetime < datetime('now', 'localtime')`
+      : `SELECT COUNT(*) AS total FROM sessions WHERE session_datetime >= datetime('now', 'localtime')`;
+
+    db.get(sql, [], (err, row) => {
+      if (err) reject(err);
+      else resolve(row?.total || 0);
     });
   });
 }
@@ -400,10 +424,12 @@ module.exports = {
   updatePaymentStatus,
   getPayment,
   getAllPayments,
+  countPayments,
   // Сеансы
   createSession,
   getAllSessions,
   getPastSessions,
+  countSessions,
   getSessionsForReminder,
   markReminderSent,
   updateSessionStatus,
