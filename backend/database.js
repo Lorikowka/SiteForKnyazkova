@@ -52,6 +52,7 @@ db.serialize(() => {
   db.run(`
     CREATE TABLE IF NOT EXISTS payments (
       id TEXT PRIMARY KEY,
+      provider_payment_id TEXT,
       order_id TEXT UNIQUE,
       amount REAL NOT NULL,
       currency TEXT DEFAULT 'RUB',
@@ -101,6 +102,26 @@ db.serialize(() => {
   db.run(`CREATE INDEX IF NOT EXISTS idx_sessions_date ON sessions(session_date)`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status)`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status)`);
+
+  db.all(`PRAGMA table_info(payments)`, [], (err, rows) => {
+    if (err) {
+      console.error('❌ Ошибка проверки схемы payments:', err.message);
+      return;
+    }
+
+    const columns = new Set(rows.map(row => row.name));
+    if (!columns.has('provider_payment_id')) {
+      db.run(`ALTER TABLE payments ADD COLUMN provider_payment_id TEXT`, (alterErr) => {
+        if (alterErr) {
+          console.error('❌ Ошибка миграции provider_payment_id:', alterErr.message);
+        } else {
+          db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_provider_payment_id ON payments(provider_payment_id) WHERE provider_payment_id IS NOT NULL`);
+        }
+      });
+    } else {
+      db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_provider_payment_id ON payments(provider_payment_id) WHERE provider_payment_id IS NOT NULL`);
+    }
+  });
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -113,21 +134,21 @@ db.serialize(() => {
 function createPayment(data) {
   return new Promise((resolve, reject) => {
     const {
-      id, order_id, amount, currency, status, description,
+      id, provider_payment_id, order_id, amount, currency, status, description,
       customer_email, customer_phone, customer_name, service_name,
       payment_method, metadata
     } = data;
 
     const sql = `
       INSERT INTO payments (
-        id, order_id, amount, currency, status, description,
+        id, provider_payment_id, order_id, amount, currency, status, description,
         customer_email, customer_phone, customer_name, service_name,
         payment_method, metadata
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
 
     const params = [
-      id, order_id, amount, currency || 'RUB', status || 'pending', description,
+      id, provider_payment_id || null, order_id, amount, currency || 'RUB', status || 'pending', description,
       customer_email, customer_phone, customer_name, service_name,
       payment_method, metadata ? JSON.stringify(metadata) : null
     ];
@@ -182,6 +203,64 @@ function getAllPayments(limit = 50, offset = 0) {
   });
 }
 
+function getPaymentByProviderId(providerPaymentId) {
+  return new Promise((resolve, reject) => {
+    const sql = `SELECT * FROM payments WHERE provider_payment_id = ?`;
+    db.get(sql, [providerPaymentId], (err, row) => {
+      if (err) reject(err);
+      else resolve(row);
+    });
+  });
+}
+
+function setPaymentProviderId(paymentId, providerPaymentId) {
+  return new Promise((resolve, reject) => {
+    const sql = `UPDATE payments SET provider_payment_id = ? WHERE id = ?`;
+    db.run(sql, [providerPaymentId, paymentId], function(err) {
+      if (err) reject(err);
+      else resolve({ changes: this.changes });
+    });
+  });
+}
+
+function updatePaymentBookingDetails(paymentId, data) {
+  return new Promise((resolve, reject) => {
+    const {
+      customer_email,
+      customer_phone,
+      customer_name,
+      service_name,
+      metadata
+    } = data;
+
+    const sql = `
+      UPDATE payments
+      SET customer_email = ?,
+          customer_phone = ?,
+          customer_name = ?,
+          service_name = ?,
+          metadata = ?
+      WHERE id = ?
+    `;
+
+    db.run(
+      sql,
+      [
+        customer_email || null,
+        customer_phone || null,
+        customer_name || null,
+        service_name || null,
+        metadata ? JSON.stringify(metadata) : null,
+        paymentId
+      ],
+      function(err) {
+        if (err) reject(err);
+        else resolve({ changes: this.changes });
+      }
+    );
+  });
+}
+
 function countPayments() {
   return new Promise((resolve, reject) => {
     db.get('SELECT COUNT(*) AS total FROM payments', [], (err, row) => {
@@ -203,21 +282,21 @@ function createSession(data) {
     const {
       payment_id, client_name, client_phone, client_email,
       service_name, session_date, session_time, session_datetime,
-      amount, comment
+      amount, comment, status
     } = data;
 
     const sql = `
       INSERT INTO sessions (
         payment_id, client_name, client_phone, client_email,
         service_name, session_date, session_time, session_datetime,
-        amount, comment
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        amount, comment, status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
 
     const params = [
       payment_id, client_name, client_phone, client_email,
       service_name, session_date, session_time, session_datetime,
-      amount, comment
+      amount, comment, status || 'scheduled'
     ];
 
     db.run(sql, params, function(err) {
@@ -350,6 +429,32 @@ function getSession(sessionId) {
   });
 }
 
+function getSessionsByPaymentId(paymentId) {
+  return new Promise((resolve, reject) => {
+    const sql = `SELECT * FROM sessions WHERE payment_id = ? ORDER BY created_at ASC`;
+    db.all(sql, [paymentId], (err, rows) => {
+      if (err) reject(err);
+      else resolve(rows);
+    });
+  });
+}
+
+function getBusySessionByDatetime(sessionDatetime) {
+  return new Promise((resolve, reject) => {
+    const sql = `
+      SELECT * FROM sessions
+      WHERE session_datetime = ?
+        AND status IN ('scheduled', 'completed')
+      LIMIT 1
+    `;
+
+    db.get(sql, [sessionDatetime], (err, row) => {
+      if (err) reject(err);
+      else resolve(row);
+    });
+  });
+}
+
 // ═══════════════════════════════════════════════════════════
 // ФУНКЦИИ ДЛЯ НАСТРОЕК
 // ═══════════════════════════════════════════════════════════
@@ -423,6 +528,9 @@ module.exports = {
   createPayment,
   updatePaymentStatus,
   getPayment,
+  getPaymentByProviderId,
+  setPaymentProviderId,
+  updatePaymentBookingDetails,
   getAllPayments,
   countPayments,
   // Сеансы
@@ -435,6 +543,8 @@ module.exports = {
   updateSessionStatus,
   deleteSession,
   getSession,
+  getSessionsByPaymentId,
+  getBusySessionByDatetime,
   // Настройки
   setSetting,
   getSetting

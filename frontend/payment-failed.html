@@ -99,8 +99,63 @@
   const urlParams = new URLSearchParams(window.location.search);
   const paymentId = urlParams.get('payment_id');
   const paymentToken = urlParams.get('token');
+  const reason = urlParams.get('reason');
+
+  const reasonMap = {
+    cancelled: {
+      title: 'Оплата отменена',
+      text: 'Вы не завершили оплату. Попробуйте выбрать время и оплатить запись ещё раз.'
+    },
+    canceled: {
+      title: 'Оплата отменена',
+      text: 'Платёж был отменён. Вы можете попробовать снова.'
+    },
+    expired: {
+      title: 'Время оплаты истекло',
+      text: 'Сессия оплаты истекла до завершения платежа. Попробуйте начать запись заново.'
+    },
+    pending: {
+      title: 'Оплата не подтверждена',
+      text: 'Мы не получили подтверждение оплаты вовремя. Если деньги списались, свяжитесь с нами.'
+    },
+    check_failed: {
+      title: 'Не удалось проверить оплату',
+      text: 'Сервер не смог подтвердить статус платежа. Попробуйте открыть страницу позже или свяжитесь с нами.'
+    },
+    connection_error: {
+      title: 'Ошибка соединения',
+      text: 'Не удалось связаться с сервером для проверки оплаты. Попробуйте позже.'
+    },
+    booking_lost: {
+      title: 'Данные записи не найдены',
+      text: 'Оплата могла пройти, но данные выбранного слота не сохранились в браузере. Свяжитесь с нами, если деньги списались.'
+    },
+    booking_confirm_failed: {
+      title: 'Оплата прошла, но запись не подтверждена',
+      text: 'Мы не смогли завершить запись после оплаты. Если деньги списались, напишите нам в Telegram.'
+    },
+    slot_taken_after_payment: {
+      title: 'Слот уже занят',
+      text: 'Пока проходила оплата, кто-то успел занять это время. Нужно выбрать другой слот или связаться с нами по вопросу возврата.'
+    }
+  };
+
+  if (reason && reasonMap[reason]) {
+    document.querySelector('h1').textContent = reasonMap[reason].title;
+    document.querySelector('.card > p').textContent = reasonMap[reason].text;
+  }
 
   if (paymentId) {
+    try {
+      const drafts = JSON.parse(localStorage.getItem('payment_booking_drafts') || '{}');
+      if (drafts[paymentId]) {
+        delete drafts[paymentId];
+        localStorage.setItem('payment_booking_drafts', JSON.stringify(drafts));
+      }
+    } catch (error) {
+      // noop
+    }
+
     const params = new URLSearchParams();
     if (paymentToken) params.set('token', paymentToken);
 

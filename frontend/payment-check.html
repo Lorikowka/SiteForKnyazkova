@@ -88,8 +88,16 @@
   const paymentToken = urlParams.get('token');
 
   let retries = 0;
-  const MAX_RETRIES = 10;
+  const MAX_RETRIES = 5;
   const RETRY_INTERVAL = 2000;
+
+  function redirectToFailed(reason) {
+    const params = new URLSearchParams();
+    if (paymentId) params.set('payment_id', paymentId);
+    if (paymentToken) params.set('token', paymentToken);
+    if (reason) params.set('reason', reason);
+    window.location.href = `payment-failed.html?${params.toString()}`;
+  }
 
   function showState(id) {
     ['loading','success','error'].forEach(s => {
@@ -97,11 +105,66 @@
     });
   }
 
+  function getBookingDraft(paymentId) {
+    try {
+      const drafts = JSON.parse(localStorage.getItem('payment_booking_drafts') || '{}');
+      return drafts[paymentId] || null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function clearBookingDraft(paymentId) {
+    try {
+      const drafts = JSON.parse(localStorage.getItem('payment_booking_drafts') || '{}');
+      if (!drafts[paymentId]) return;
+      delete drafts[paymentId];
+      localStorage.setItem('payment_booking_drafts', JSON.stringify(drafts));
+    } catch (error) {
+      // noop
+    }
+  }
+
+  async function confirmBooking() {
+    const draft = getBookingDraft(paymentId);
+    const response = await fetch(`/api/payments/${encodeURIComponent(paymentId)}/confirm-booking`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        token: paymentToken || draft?.token || '',
+        customerEmail: draft?.customerEmail || '',
+        customerName: draft?.customerName,
+        customerPhone: draft?.customerPhone,
+        serviceName: draft?.serviceName,
+        sessionDate: draft?.sessionDate,
+        sessionTime: draft?.sessionTime,
+        sessionDatetime: draft?.sessionDatetime,
+        comment: draft?.comment || ''
+      })
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.success) {
+      if (response.status === 400 && !draft) {
+        redirectToFailed('booking_lost');
+        return;
+      }
+      if (response.status === 409 && data.code === 'slot_taken') {
+        redirectToFailed('slot_taken_after_payment');
+        return;
+      }
+      redirectToFailed('booking_confirm_failed');
+      return;
+    }
+
+    clearBookingDraft(paymentId);
+    showState('success');
+    setTimeout(() => { window.location.href = 'index.html?payment_success=true'; }, 2000);
+  }
+
   function checkPayment() {
     if (!paymentId) {
-      document.getElementById('error-title').textContent = 'Оплата отменена';
-      document.getElementById('error-text').textContent = 'Вы не завершили оплату. Попробуйте записаться снова.';
-      showState('error');
+      redirectToFailed('cancelled');
       return;
     }
 
@@ -115,27 +178,19 @@
           const status = data.payment.status;
 
           if (status === 'succeeded' || status === 'waiting_for_capture') {
-            showState('success');
-            setTimeout(() => { window.location.href = 'index.html?payment_success=true'; }, 2000);
+            confirmBooking().catch(() => redirectToFailed('booking_confirm_failed'));
           } else if (status === 'canceled' || status === 'expired') {
-            document.getElementById('error-title').textContent = 'Оплата отменена';
-            document.getElementById('error-text').textContent = 'Платёж был отменён. Вы можете попробовать снова.';
-            showState('error');
+            redirectToFailed(status);
           } else {
-            // pending — повторяем проверку
             retries++;
             if (retries < MAX_RETRIES) {
               setTimeout(checkPayment, RETRY_INTERVAL);
             } else {
-              document.getElementById('error-title').textContent = 'Оплата в обработке';
-              document.getElementById('error-text').textContent = 'Платёж ещё обрабатывается. Обновите страницу через несколько минут или свяжитесь с нами в Telegram.';
-              showState('error');
+              redirectToFailed('pending');
             }
           }
         } else {
-          document.getElementById('error-title').textContent = 'Ошибка';
-          document.getElementById('error-text').textContent = 'Не удалось проверить статус платежа.';
-          showState('error');
+          redirectToFailed('check_failed');
         }
       })
       .catch(() => {
@@ -143,9 +198,7 @@
         if (retries < MAX_RETRIES) {
           setTimeout(checkPayment, RETRY_INTERVAL);
         } else {
-          document.getElementById('error-title').textContent = 'Ошибка соединения';
-          document.getElementById('error-text').textContent = 'Не удалось подключиться к серверу. Попробуйте позже.';
-          showState('error');
+          redirectToFailed('connection_error');
         }
       });
   }

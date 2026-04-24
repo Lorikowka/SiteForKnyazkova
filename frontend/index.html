@@ -78,38 +78,21 @@
 <section id="education" class="section">
   <div class="container">
     <h2>Образование и дипломы</h2>
-    <div class="diplomas-grid">
-      <div class="diploma-item">
-        <h3 class="diploma-title">Диплом магистра с отличием</h3>
-        <p class="diploma-sub">Психолого-педагогическое образование — Псковский государственный университет, 2025</p>
-        <div class="diploma-thumb">
-          <a class="diploma-link" href="images/diploma_1.pdf" target="_blank"><span>Открыть диплом</span></a>
-        </div>
-      </div>
-      <div class="diploma-item">
-        <h3 class="diploma-title">Диплом о профессиональной переподготовке</h3>
-        <p class="diploma-sub">Психологическое консультирование / Психолог-консультант — Московский институт психологии, 2025</p>
-        <div class="diploma-thumb">
-          <a class="diploma-link" href="images/diploma_2.pdf" target="_blank"><span>Открыть диплом</span></a>
-        </div>
-      </div>
-      <div class="diploma-item">
-        <h3 class="diploma-title">Сертификаты — Психотерапия взросления</h3>
-        <p class="diploma-sub">Европейская ассоциация психотерапии: «Введение», «Воссоединение с чувствами» — 2024</p>
-        <div class="diploma-thumb">
-          <a class="diploma-link" href="images/diploma_7.pdf" target="_blank"><span>Открыть сертификаты</span></a>
-        </div>
-      </div>
-      <div class="diploma-item">
-        <h3 class="diploma-title">Сертификаты — Эмоциональный интеллект и терапия чувств</h3>
-        <p class="diploma-sub">Европейская ассоциация психотерапии: «Эмоциональный интеллект», «Терапия, центрированная на чувствах» — 2024</p>
-        <div class="diploma-thumb">
-          <a class="diploma-link" href="images/diploma_8.pdf" target="_blank"><span>Открыть сертификаты</span></a>
-        </div>
-      </div>
+    <div class="diplomas-scroll-wrap">
+      <div class="diplomas-scroll" id="diplomas-scroll"></div>
+      <button class="diploma-nav diploma-prev" id="diploma-prev" aria-label="Назад">&#8249;</button>
+      <button class="diploma-nav diploma-next" id="diploma-next" aria-label="Вперёд">&#8250;</button>
     </div>
   </div>
 </section>
+
+<div class="diploma-lightbox hidden" id="diploma-lightbox">
+  <button class="lb-close" id="lb-close" aria-label="Закрыть">&#10005;</button>
+  <button class="lb-nav lb-prev" id="lb-prev" aria-label="Предыдущий">&#8249;</button>
+  <button class="lb-nav lb-next" id="lb-next" aria-label="Следующий">&#8250;</button>
+  <div class="lb-canvas-wrap" id="lb-canvas-wrap"></div>
+  <p class="lb-title" id="lb-title"></p>
+</div>
 
 <section id="payment" class="section payment-section">
   <div class="container narrow">
@@ -244,11 +227,6 @@
 
 <footer id="contacts">
   <div class="container footer-inner">
-    <div class="footer-brand">
-      <img src="images/logo.png" alt="Логотип" class="footer-logo">
-      <span class="footer-name">Екатерина Князькова</span>
-      <span class="footer-tagline">Практикующий психолог</span>
-    </div>
     <div class="footer-contacts">
       <p class="footer-section-title">Контакты</p>
       <a href="https://t.me/Ekaterina_K" target="_blank" class="footer-link footer-link-tg">

@@ -85,6 +85,202 @@ const sectionObserver = new IntersectionObserver(entries => {
 
 sections.forEach(s => sectionObserver.observe(s));
 
+const DIPLOMAS = [
+  { img: 'images/diplomas/diploma_1.png', title: 'Диплом магистра с отличием — ПсковГУ, психолого-педагогическое образование, 2025' },
+  { img: 'images/diplomas/diploma_3.png', title: 'Диплом о профессиональной переподготовке — Институт прикладной психологии, психолог-тренер, 340 часов, 2025' },
+  { img: 'images/diplomas/diploma_4.png', title: 'Сертификаты — Психотерапия взросления: введение и воссоединение с чувствами, 2024' },
+  { img: 'images/diplomas/diploma_5.png', title: 'Сертификаты — Эмоциональный интеллект в психотерапии взросления и терапия, центрированная на чувствах, 2024' },
+  { img: 'images/diploma_1/file-001.png', title: 'Диплом 1' },
+  { img: 'images/diploma_2/file-001.png', title: 'Диплом 2 — файл 1' },
+  { img: 'images/diploma_2/file-002.png', title: 'Диплом 2 — файл 2' },
+  { img: 'images/diploma_3/file-001.png', title: 'Диплом 3' },
+  { img: 'images/diploma_4/file-001.png', title: 'Диплом 4' },
+  { img: 'images/diploma_5/file-001.png', title: 'Диплом 5' },
+  { img: 'images/diploma_7/file-001.png', title: 'Диплом 7' },
+  { img: 'images/diploma_8/file-001.png', title: 'Диплом 8' },
+];
+
+const diplomaScrollEl = document.getElementById('diplomas-scroll');
+const diplomaPrevBtn  = document.getElementById('diploma-prev');
+const diplomaNextBtn  = document.getElementById('diploma-next');
+const lbOverlay       = document.getElementById('diploma-lightbox');
+const lbCanvasWrap    = document.getElementById('lb-canvas-wrap');
+const lbTitle         = document.getElementById('lb-title');
+const lbClose         = document.getElementById('lb-close');
+const lbPrev          = document.getElementById('lb-prev');
+const lbNext          = document.getElementById('lb-next');
+
+let lbCurrentIndex = 0;
+let lbZoom = 1;
+let lbIsDragging = false;
+let lbDragStart = { x: 0, y: 0 };
+let lbTranslate = { x: 0, y: 0 };
+let lbImg = null;
+
+function applyLbTransform() {
+  if (!lbImg) return;
+  lbImg.style.transform = `translate(${lbTranslate.x}px, ${lbTranslate.y}px) scale(${lbZoom})`;
+  lbImg.style.cursor = lbZoom > 1 ? 'grab' : 'zoom-in';
+}
+
+function attachLbImgEvents() {
+  if (!lbImg) return;
+
+  lbImg.addEventListener('wheel', e => {
+    e.preventDefault();
+    lbZoom = Math.min(4, Math.max(1, lbZoom + (e.deltaY < 0 ? 0.25 : -0.25)));
+    if (lbZoom === 1) lbTranslate = { x: 0, y: 0 };
+    applyLbTransform();
+  }, { passive: false });
+
+  lbImg.addEventListener('mousedown', e => {
+    if (lbZoom <= 1) return;
+    lbIsDragging = true;
+    lbDragStart = { x: e.clientX - lbTranslate.x, y: e.clientY - lbTranslate.y };
+    lbImg.style.cursor = 'grabbing';
+    e.preventDefault();
+  });
+}
+
+function renderLightboxImg() {
+  if (!lbCanvasWrap || !lbTitle) return;
+
+  const diploma = DIPLOMAS[lbCurrentIndex];
+  lbTitle.textContent = diploma.title;
+  lbCanvasWrap.innerHTML = '';
+
+  lbImg = document.createElement('img');
+  lbImg.src = diploma.img;
+  lbImg.alt = diploma.title;
+  lbImg.style.cssText = 'max-width:90vw;max-height:85vh;object-fit:contain;display:block;user-select:none;transition:transform 0.1s;';
+  applyLbTransform();
+  lbCanvasWrap.appendChild(lbImg);
+  attachLbImgEvents();
+}
+
+function openLightbox(index) {
+  if (!lbOverlay) return;
+  lbCurrentIndex = index;
+  lbZoom = 1;
+  lbTranslate = { x: 0, y: 0 };
+  lbOverlay.classList.remove('hidden');
+  document.body.style.overflow = 'hidden';
+  renderLightboxImg();
+}
+
+function closeLightbox() {
+  if (!lbOverlay) return;
+  lbOverlay.classList.add('hidden');
+  document.body.style.overflow = '';
+}
+
+function updateDiplomaNavButtons() {
+  if (!diplomaScrollEl || !diplomaPrevBtn || !diplomaNextBtn) return;
+
+  if (DIPLOMAS.length <= 1) {
+    diplomaPrevBtn.style.display = 'none';
+    diplomaNextBtn.style.display = 'none';
+    return;
+  }
+
+  const maxScroll = diplomaScrollEl.scrollWidth - diplomaScrollEl.clientWidth;
+  diplomaPrevBtn.style.opacity = diplomaScrollEl.scrollLeft <= 2 ? '0' : '1';
+  diplomaPrevBtn.style.pointerEvents = diplomaScrollEl.scrollLeft <= 2 ? 'none' : 'auto';
+  diplomaNextBtn.style.opacity = diplomaScrollEl.scrollLeft >= maxScroll - 2 ? '0' : '1';
+  diplomaNextBtn.style.pointerEvents = diplomaScrollEl.scrollLeft >= maxScroll - 2 ? 'none' : 'auto';
+}
+
+function renderDiplomaPreviews() {
+  if (!diplomaScrollEl) return;
+
+  DIPLOMAS.forEach((diploma, index) => {
+    const item = document.createElement('div');
+    item.className = 'diploma-item';
+
+    const imgWrap = document.createElement('div');
+    imgWrap.className = 'diploma-canvas-wrap';
+
+    const img = document.createElement('img');
+    img.src = diploma.img;
+    img.alt = diploma.title;
+    img.className = 'diploma-canvas';
+    imgWrap.appendChild(img);
+
+    const caption = document.createElement('p');
+    caption.className = 'diploma-caption';
+    caption.textContent = diploma.title;
+
+    item.appendChild(imgWrap);
+    item.appendChild(caption);
+    item.addEventListener('click', () => openLightbox(index));
+    diplomaScrollEl.appendChild(item);
+  });
+
+  diplomaScrollEl.querySelectorAll('img').forEach(img => {
+    img.addEventListener('load', updateDiplomaNavButtons);
+  });
+
+  updateDiplomaNavButtons();
+}
+
+if (diplomaScrollEl) {
+  renderDiplomaPreviews();
+  diplomaScrollEl.addEventListener('scroll', updateDiplomaNavButtons);
+}
+
+if (diplomaPrevBtn) {
+  diplomaPrevBtn.addEventListener('click', () => {
+    diplomaScrollEl.scrollBy({ left: -320, behavior: 'smooth' });
+  });
+}
+
+if (diplomaNextBtn) {
+  diplomaNextBtn.addEventListener('click', () => {
+    diplomaScrollEl.scrollBy({ left: 320, behavior: 'smooth' });
+  });
+}
+
+if (lbClose) lbClose.addEventListener('click', closeLightbox);
+if (lbOverlay) {
+  lbOverlay.addEventListener('click', e => {
+    if (e.target === lbOverlay) closeLightbox();
+  });
+}
+if (lbPrev) {
+  lbPrev.addEventListener('click', () => {
+    lbCurrentIndex = (lbCurrentIndex - 1 + DIPLOMAS.length) % DIPLOMAS.length;
+    lbZoom = 1;
+    lbTranslate = { x: 0, y: 0 };
+    renderLightboxImg();
+  });
+}
+if (lbNext) {
+  lbNext.addEventListener('click', () => {
+    lbCurrentIndex = (lbCurrentIndex + 1) % DIPLOMAS.length;
+    lbZoom = 1;
+    lbTranslate = { x: 0, y: 0 };
+    renderLightboxImg();
+  });
+}
+
+document.addEventListener('keydown', e => {
+  if (!lbOverlay || lbOverlay.classList.contains('hidden')) return;
+  if (e.key === 'Escape') closeLightbox();
+  if (e.key === 'ArrowLeft' && lbPrev) lbPrev.click();
+  if (e.key === 'ArrowRight' && lbNext) lbNext.click();
+});
+
+window.addEventListener('mousemove', e => {
+  if (!lbIsDragging || !lbImg) return;
+  lbTranslate = { x: e.clientX - lbDragStart.x, y: e.clientY - lbDragStart.y };
+  applyLbTransform();
+});
+
+window.addEventListener('mouseup', () => {
+  lbIsDragging = false;
+  if (lbImg) lbImg.style.cursor = lbZoom > 1 ? 'grab' : 'zoom-in';
+});
+
 // ═══════════════════════════════════════════
 // ФОРМА ЗАПИСИ — 3 ШАГА
 // ═══════════════════════════════════════════
@@ -175,6 +371,37 @@ const successModal = document.getElementById('success-modal');
 const modalClose   = document.getElementById('modal-close');
 const successText  = document.getElementById('success-text');
 
+if (phoneInput) {
+  phoneInput.addEventListener('input', function () {
+    let val = this.value.replace(/\D/g, '');
+    if (val.startsWith('8')) val = '7' + val.slice(1);
+    if (!val.startsWith('7')) val = '7' + val;
+    val = val.slice(0, 11);
+
+    let formatted = '+7';
+    if (val.length > 1) formatted += ' (' + val.slice(1, 4);
+    if (val.length >= 4) formatted += ') ' + val.slice(4, 7);
+    if (val.length >= 7) formatted += '-' + val.slice(7, 9);
+    if (val.length >= 9) formatted += '-' + val.slice(9, 11);
+    this.value = formatted;
+  });
+
+  phoneInput.addEventListener('keydown', function (e) {
+    if (e.key === 'Backspace' && this.value === '+7') {
+      e.preventDefault();
+      this.value = '';
+    }
+  });
+
+  phoneInput.addEventListener('focus', function () {
+    if (!this.value) this.value = '+7 ';
+  });
+
+  phoneInput.addEventListener('blur', function () {
+    if (this.value === '+7 ' || this.value === '+7') this.value = '';
+  });
+}
+
 // ---- Навигация по шагам ----
 function goToStep(n) {
   stepPanels.forEach((p, i) => {
@@ -214,7 +441,7 @@ function validateStep1() {
   }
 
   const emailErr = document.getElementById('email-error');
-  if (emailVal && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailVal)) {
+  if (!emailVal || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailVal)) {
     emailInput.classList.add('error'); emailErr.classList.add('visible'); ok = false;
   } else {
     emailInput.classList.remove('error'); emailErr.classList.remove('visible');
@@ -453,6 +680,7 @@ function fillSummary() {
 // Backend на том же порту, используем относительный путь
 const BACKEND_URL = ''; // Пустая строка = тот же origin
 // Если фронт на другом порту, укажите: 'http://localhost:1488'
+const PAYMENT_DRAFT_STORAGE_KEY = 'payment_booking_drafts';
 
 function formatLocalSessionDate(date) {
   return date.toISOString().slice(0, 10);
@@ -471,6 +699,37 @@ function formatLocalSessionDatetime(date, time) {
 
   return `${year}-${month}-${day}T${normalizedHours}:${normalizedMinutes}:00`;
 }
+
+function getPaymentDrafts() {
+  try {
+    return JSON.parse(localStorage.getItem(PAYMENT_DRAFT_STORAGE_KEY) || '{}');
+  } catch (error) {
+    console.warn('Не удалось прочитать черновики оплат:', error);
+    return {};
+  }
+}
+
+function savePaymentDraft(paymentId, draft) {
+  const drafts = getPaymentDrafts();
+  drafts[paymentId] = draft;
+  localStorage.setItem(PAYMENT_DRAFT_STORAGE_KEY, JSON.stringify(drafts));
+}
+
+function clearPaymentDraft(paymentId) {
+  const drafts = getPaymentDrafts();
+  if (!drafts[paymentId]) return;
+  delete drafts[paymentId];
+  localStorage.setItem(PAYMENT_DRAFT_STORAGE_KEY, JSON.stringify(drafts));
+}
+
+window.bookingDraftStorage = {
+  get(paymentId) {
+    const drafts = getPaymentDrafts();
+    return drafts[paymentId] || null;
+  },
+  save: savePaymentDraft,
+  clear: clearPaymentDraft
+};
 
 async function createPayment() {
   // Валидация
@@ -496,14 +755,6 @@ async function createPayment() {
     console.log('📝 Создаём платёж...', {
       amount: state.price,
       description: state.serviceLabel,
-      customerEmail: state.email,
-      customerName: state.fio,
-      customerPhone: state.phone,
-      serviceName: state.serviceLabel,
-      sessionDate,
-      sessionTime,
-      sessionDatetime,
-      comment: state.comment,
       orderId: `order_${Date.now()}`
     });
 
@@ -513,14 +764,6 @@ async function createPayment() {
       body: JSON.stringify({
         amount: state.price,
         description: state.serviceLabel,
-        customerEmail: state.email,
-        customerName: state.fio,
-        customerPhone: state.phone,
-        serviceName: state.serviceLabel,
-        sessionDate,
-        sessionTime,
-        sessionDatetime,
-        comment: state.comment,
         orderId: `order_${Date.now()}`
       })
     });
@@ -528,15 +771,38 @@ async function createPayment() {
     console.log('📡 Ответ от сервера:', response.status, response.statusText);
 
     if (!response.ok) {
-      const errorText = await response.text();
-      console.error('❌ Ошибка сервера:', errorText);
-      throw new Error(`Server error: ${response.status} - ${errorText}`);
+      const errorData = await response.json().catch(() => null);
+      console.error('❌ Ошибка сервера:', errorData || response.statusText);
+
+      if (response.status === 409) {
+        await loadSchedule();
+        goToStep(2);
+        btnStep2.disabled = true;
+        selectedSlotInfo.classList.add('hidden');
+        state.selectedTime = null;
+        alert(errorData?.error || 'Это время уже занято. Пожалуйста, выберите другой слот.');
+        return;
+      }
+
+      throw new Error(errorData?.error || `Server error: ${response.status}`);
     }
 
     const data = await response.json();
     console.log('✅ Данные от сервера:', JSON.stringify(data, null, 2));
 
     if (data.success && data.confirmationUrl) {
+      savePaymentDraft(data.paymentId, {
+        token: data.statusToken || '',
+        customerEmail: state.email || '',
+        customerName: state.fio,
+        customerPhone: state.phone,
+        serviceName: state.serviceLabel,
+        sessionDate,
+        sessionTime,
+        sessionDatetime,
+        comment: state.comment || ''
+      });
+
       console.log(' Ссылка для оплаты:', data.confirmationUrl);
       console.log('💰 Сумма:', data.amount, '₽');
       console.log('🆔 ID платежа:', data.paymentId);

@@ -221,15 +221,20 @@ function getStoredPaymentMetadata(paymentRow) {
   return safeJsonParse(paymentRow?.metadata, {});
 }
 
+function hasValidPaymentToken(paymentRow, providedToken) {
+  if (!providedToken) return false;
+  const metadata = getStoredPaymentMetadata(paymentRow);
+  return Boolean(metadata.statusToken && providedToken === metadata.statusToken);
+}
+
 function canAccessPaymentDetails(req, paymentRow) {
   const providedApiKey = req.headers['x-api-key'];
   if (API_KEY && providedApiKey === API_KEY) {
     return true;
   }
 
-  const metadata = getStoredPaymentMetadata(paymentRow);
   const providedToken = typeof req.query.token === 'string' ? req.query.token : '';
-  return Boolean(providedToken && metadata.statusToken && providedToken === metadata.statusToken);
+  return hasValidPaymentToken(paymentRow, providedToken);
 }
 
 async function sendTelegramNotification(message) {
@@ -330,32 +335,14 @@ app.post('/api/create-payment',
     body('amount').optional().isFloat({ min: 10, max: 250000 }),
     body('description').optional().isString().isLength({ max: 200 }),
     body('orderId').optional().isString().isLength({ max: 50 }).matches(/^[a-zA-Z0-9_-]+$/),
-    body('customerEmail').optional().isEmail().normalizeEmail(),
-    body('customerName').optional().isString().isLength({ max: 200 }),
-    body('customerPhone').optional().isString().isLength({ max: 20 }),
-    body('serviceName').optional().isString().isLength({ max: 100 }),
-    body('sessionDate').optional().isString(),
-    body('sessionTime').optional().isString(),
-    body('sessionDatetime').optional().isString(),
-    body('comment').optional().isString().isLength({ max: 500 }),
     handleValidationErrors
   ],
   async (req, res) => {
-    const startTime = Date.now();
-
     try {
       const {
         amount = 3500,
         description = 'Консультация психолога',
-        orderId,
-        customerEmail,
-        customerName,
-        customerPhone,
-        serviceName,
-        sessionDate,
-        sessionTime,
-        sessionDatetime,
-        comment
+        orderId
       } = req.body;
 
       const orderNumber = orderId || `order_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
@@ -364,14 +351,6 @@ app.post('/api/create-payment',
       const cancelToken = crypto.randomBytes(16).toString('hex');
       const paymentMetadata = {
         orderId: orderNumber,
-        customerEmail,
-        customerName,
-        customerPhone,
-        serviceName: serviceName || description,
-        sessionDate,
-        sessionTime,
-        sessionDatetime,
-        comment,
         statusToken,
         cancelToken
       };
@@ -381,54 +360,24 @@ app.post('/api/create-payment',
       // Сохраняем платёж в БД
       await db.createPayment({
         id: paymentId,
+        provider_payment_id: null,
         order_id: orderNumber,
         amount,
         currency: 'RUB',
         status: 'pending',
         description,
-        customer_email: customerEmail,
-        customer_phone: customerPhone,
-        customer_name: customerName,
-        service_name: serviceName,
+        customer_email: null,
+        customer_phone: null,
+        customer_name: null,
+        service_name: null,
         metadata: paymentMetadata
       });
 
       // MOCK режим
       if (MOCK_MODE) {
-        // Обновляем статус на succeeded (в MOCK режиме платёж считается успешным)
         await db.updatePaymentStatus(paymentId, 'succeeded', new Date().toISOString());
 
         const mockConfirmationUrl = `${SITE_URL}/payment-check.html?mock=true&amount=${amount}&payment_id=${paymentId}&token=${statusToken}`;
-
-        // Сохраняем сеанс в БД
-        if (sessionDatetime && customerName && customerPhone) {
-          await db.createSession({
-            payment_id: paymentId,
-            client_name: customerName,
-            client_phone: customerPhone,
-            client_email: customerEmail,
-            service_name: serviceName || description,
-            session_date: sessionDate,
-            session_time: sessionTime,
-            session_datetime: sessionDatetime,
-            amount,
-            comment
-          });
-          logger.info(`✅ Сеанс сохранён в БД: ${sessionDatetime}`);
-        }
-
-        // Отправляем email подтверждение
-        if (customerEmail) {
-          await sendEmailConfirmation({
-            email: customerEmail,
-            name: customerName,
-            amount,
-            serviceName: serviceName || description,
-            sessionDate,
-            sessionTime,
-            paymentId
-          });
-        }
 
         logger.info(`✅ MOCK платёж создан: ${paymentId}`);
         return res.json({
@@ -436,6 +385,7 @@ app.post('/api/create-payment',
           paymentId,
           confirmationUrl: mockConfirmationUrl,
           amount: amount.toString(),
+          statusToken,
           mock: true
         });
       }
@@ -471,19 +421,16 @@ app.post('/api/create-payment',
       const payment = await ykResponse.json();
       logger.info(`✅ Платёж создан в ЮKassa: ${payment.id}`);
 
-      // Обновляем ID платежа на реальный ID от ЮKassa
-      await new Promise((resolve, reject) => {
-        db.db.run('UPDATE payments SET id = ? WHERE id = ?', [payment.id, paymentId], function(err) {
-          if (err) reject(err);
-          else resolve();
-        });
-      });
+      // Сохраняем внешний ID ЮKassa отдельно, внутренний ID оставляем стабильным
+      await db.setPaymentProviderId(paymentId, payment.id);
 
       res.json({
         success: true,
-        paymentId: payment.id,
+        paymentId,
+        providerPaymentId: payment.id,
         confirmationUrl: payment.confirmation.confirmation_url,
-        amount: payment.amount.value
+        amount: payment.amount.value,
+        statusToken
       });
 
     } catch (error) {
@@ -519,8 +466,9 @@ app.get('/api/payment/:id', async (req, res) => {
       try {
         const checkController = new AbortController();
         const checkTimeout = setTimeout(() => checkController.abort(), 5000);
+        const externalPaymentId = payment.provider_payment_id || id;
         const ykResponse = await fetch(
-          `${YOOKASSA_BASE_URL}/payments/${id}`,
+          `${YOOKASSA_BASE_URL}/payments/${externalPaymentId}`,
           {
             headers: { 'Authorization': `Basic ${AUTH_HEADER}` },
             signal: checkController.signal
@@ -530,7 +478,6 @@ app.get('/api/payment/:id', async (req, res) => {
 
         const ykPayment = await ykResponse.json();
         if (ykPayment.status === 'succeeded' || ykPayment.paid) {
-          // Обновляем статус в БД
           await db.updatePaymentStatus(id, 'succeeded', ykPayment.paid_at);
           payment.status = 'succeeded';
           payment.paid_at = ykPayment.paid_at;
@@ -582,7 +529,7 @@ app.post('/api/webhook', async (req, res) => {
 
     // Защита от дублирования: проверяем, не обрабатывали уже этот event
     const eventId = event.id || `${event.event}_${object.id}_${event.created_at}`;
-    const existingPayment = await db.getPayment(object.id);
+    const existingPayment = await db.getPaymentByProviderId(object.id);
 
     logger.info(`📩 Webhook: ${event.event} ${object.id} (event: ${eventId})`);
 
@@ -594,39 +541,12 @@ app.post('/api/webhook', async (req, res) => {
       }
 
       // Обновляем статус платежа в БД
-      await db.updatePaymentStatus(object.id, 'succeeded', object.paid_at);
-
-      // Получаем метаданные
-      const metadata = getStoredPaymentMetadata(existingPayment);
-
-      // Если есть данные о сеансе — сохраняем и отправляем email
-      if (metadata.sessionDatetime && metadata.customerPhone) {
-        await db.createSession({
-          payment_id: object.id,
-          client_name: metadata.customerName,
-          client_phone: metadata.customerPhone,
-          client_email: metadata.customerEmail,
-          service_name: metadata.serviceName,
-          session_date: metadata.sessionDate,
-          session_time: metadata.sessionTime,
-          session_datetime: metadata.sessionDatetime,
-          amount: object.amount.value,
-          comment: metadata.comment
-        });
-
-        // Отправляем email подтверждение
-        if (metadata.customerEmail) {
-          await sendEmailConfirmation({
-            email: metadata.customerEmail,
-            name: metadata.customerName,
-            amount: object.amount.value,
-            serviceName: metadata.serviceName,
-            sessionDate: metadata.sessionDate,
-            sessionTime: metadata.sessionTime,
-            paymentId: object.id
-          });
-        }
+      if (!existingPayment) {
+        logger.warn(`⚠️ Платёж YooKassa ${object.id} не найден в локальной БД`);
+        return res.status(404).send('Payment not found');
       }
+
+      await db.updatePaymentStatus(existingPayment.id, 'succeeded', object.paid_at);
 
       await sendTelegramNotification(
         `✅ <b>Оплата получена!</b>\n\n` +
@@ -641,26 +561,13 @@ app.post('/api/webhook', async (req, res) => {
       }
 
       // Обновляем статус в БД
-      await db.updatePaymentStatus(object.id, object.status);
-
-      // Отменяем связанный сеанс (если есть)
-      try {
-        const sessions = await new Promise((resolve, reject) => {
-          db.db.all('SELECT id FROM sessions WHERE payment_id = ?', [object.id], (err, rows) => {
-            if (err) reject(err);
-            else resolve(rows);
-          });
-        });
-
-        for (const session of sessions) {
-          await db.updateSessionStatus(session.id, 'cancelled');
-          logger.info(`❌ Сеанс #${session.id} отменён (платёж ${object.id})`);
-        }
-      } catch (sessionError) {
-        logger.warn(`⚠️ Не удалось отменить сеанс: ${sessionError.message}`);
+      if (!existingPayment) {
+        logger.warn(`⚠️ Платёж YooKassa ${object.id} не найден в локальной БД`);
+        return res.status(404).send('Payment not found');
       }
 
-      logger.info(`❌ Платёж отменён/истёк: ${object.id}. Сеанс(ы) переведены в статус 'cancelled'.`);
+      await db.updatePaymentStatus(existingPayment.id, object.status);
+      logger.info(`❌ Платёж отменён/истёк: ${object.id}`);
 
       await sendTelegramNotification(
         `❌ <b>Оплата отменена!</b>\n\n` +
@@ -780,6 +687,131 @@ app.delete('/api/sessions/:id',
     } catch (error) {
       logger.error(`❌ Ошибка удаления сеанса:`, error.message);
       res.status(500).json({ success: false, error: error.message });
+    }
+  }
+);
+
+app.post('/api/payments/:id/confirm-booking',
+  strictLimiter,
+  [
+    body('token').isString().isLength({ min: 10, max: 200 }),
+    body('customerEmail').optional({ values: 'falsy' }).isEmail().normalizeEmail(),
+    body('customerName').optional().isString().trim().isLength({ min: 2, max: 200 }),
+    body('customerPhone').optional().isString().trim().isLength({ min: 5, max: 20 }),
+    body('serviceName').optional().isString().trim().isLength({ min: 2, max: 100 }),
+    body('sessionDate').optional().isString().trim().isLength({ min: 8, max: 20 }),
+    body('sessionTime').optional().isString().trim().isLength({ min: 4, max: 10 }),
+    body('sessionDatetime').optional().isString().trim().isLength({ min: 16, max: 40 }),
+    body('comment').optional().isString().isLength({ max: 500 }),
+    handleValidationErrors
+  ],
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const payment = await db.getPayment(id);
+
+      if (!payment) {
+        return res.status(404).json({ success: false, error: 'Платёж не найден' });
+      }
+
+      const {
+        token,
+        customerEmail,
+        customerName,
+        customerPhone,
+        serviceName,
+        sessionDate,
+        sessionTime,
+        sessionDatetime,
+        comment
+      } = req.body;
+
+      if (!hasValidPaymentToken(payment, token)) {
+        return res.status(403).json({ success: false, error: 'Неверный токен подтверждения' });
+      }
+
+      if (payment.status !== 'succeeded' && payment.status !== 'waiting_for_capture') {
+        return res.status(409).json({
+          success: false,
+          error: 'Запись можно подтвердить только после успешной оплаты'
+        });
+      }
+
+      const existingSessions = await db.getSessionsByPaymentId(id);
+      if (existingSessions.length > 0) {
+        return res.json({ success: true, alreadyConfirmed: true, sessionId: existingSessions[0].id });
+      }
+
+      if (!customerName || !customerPhone || !serviceName || !sessionDate || !sessionTime || !sessionDatetime) {
+        return res.status(400).json({
+          success: false,
+          error: 'Не хватает данных для подтверждения записи'
+        });
+      }
+
+      const busySession = await db.getBusySessionByDatetime(sessionDatetime);
+      if (busySession) {
+        return res.status(409).json({
+          success: false,
+          error: 'Выбранное время уже занято. Пожалуйста, выберите другой слот.',
+          code: 'slot_taken'
+        });
+      }
+
+      const metadata = {
+        ...getStoredPaymentMetadata(payment),
+        customerEmail: customerEmail || '',
+        customerName,
+        customerPhone,
+        serviceName,
+        sessionDate,
+        sessionTime,
+        sessionDatetime,
+        comment: comment || ''
+      };
+
+      const createdSession = await db.createSession({
+        payment_id: id,
+        client_name: customerName,
+        client_phone: customerPhone,
+        client_email: customerEmail || null,
+        service_name: serviceName,
+        session_date: sessionDate,
+        session_time: sessionTime,
+        session_datetime: sessionDatetime,
+        amount: payment.amount,
+        comment: comment || null,
+        status: 'scheduled'
+      });
+
+      await db.updatePaymentBookingDetails(id, {
+        customer_email: customerEmail || null,
+        customer_phone: customerPhone,
+        customer_name: customerName,
+        service_name: serviceName,
+        metadata
+      });
+
+      if (customerEmail) {
+        await sendEmailConfirmation({
+          email: customerEmail,
+          name: customerName,
+          amount: payment.amount,
+          serviceName,
+          sessionDate,
+          sessionTime,
+          paymentId: id
+        });
+      }
+
+      logger.info(`✅ Запись подтверждена после оплаты: ${sessionDatetime} (${id})`);
+      res.json({ success: true, sessionId: createdSession.id });
+    } catch (error) {
+      logger.error(`❌ Ошибка подтверждения записи: ${error.message}`);
+      res.status(500).json({
+        success: false,
+        error: 'Не удалось подтвердить запись'
+      });
     }
   }
 );
