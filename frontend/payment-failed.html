@@ -86,7 +86,7 @@
   </div>
 
   <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;">
-    <a href="index.html#payment" class="btn error">Попробовать снова</a>
+    <button type="button" class="btn error" id="retry-btn">Попробовать снова</button>
     <a href="index.html" class="btn primary">На главную</a>
   </div>
 
@@ -100,6 +100,9 @@
   const paymentId = urlParams.get('payment_id');
   const paymentToken = urlParams.get('token');
   const reason = urlParams.get('reason');
+  const retryBtn = document.getElementById('retry-btn');
+  let paymentDetails = null;
+  let bookingDraft = null;
 
   const reasonMap = {
     cancelled: {
@@ -145,17 +148,111 @@
     document.querySelector('.card > p').textContent = reasonMap[reason].text;
   }
 
-  if (paymentId) {
+  function getDraft(paymentId) {
     try {
       const drafts = JSON.parse(localStorage.getItem('payment_booking_drafts') || '{}');
-      if (drafts[paymentId]) {
-        delete drafts[paymentId];
-        localStorage.setItem('payment_booking_drafts', JSON.stringify(drafts));
-      }
+      return drafts[paymentId] || null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function saveDraft(paymentId, draft) {
+    try {
+      const drafts = JSON.parse(localStorage.getItem('payment_booking_drafts') || '{}');
+      drafts[paymentId] = draft;
+      localStorage.setItem('payment_booking_drafts', JSON.stringify(drafts));
     } catch (error) {
       // noop
     }
+  }
 
+  function clearDraft(paymentId) {
+    try {
+      const drafts = JSON.parse(localStorage.getItem('payment_booking_drafts') || '{}');
+      if (!drafts[paymentId]) return;
+      delete drafts[paymentId];
+      localStorage.setItem('payment_booking_drafts', JSON.stringify(drafts));
+    } catch (error) {
+      // noop
+    }
+  }
+
+  async function discardPaymentIfPossible() {
+    if (!paymentId || !paymentToken) return;
+
+    try {
+      await fetch(`/api/payments/${encodeURIComponent(paymentId)}/discard`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: paymentToken })
+      });
+    } catch (error) {
+      // noop
+    }
+  }
+
+  bookingDraft = paymentId ? getDraft(paymentId) : null;
+
+  async function retryPayment() {
+    const amount = bookingDraft?.amount || paymentDetails?.amount || null;
+    const description = bookingDraft?.description || bookingDraft?.serviceName || paymentDetails?.description || 'Консультация психолога';
+
+    if (!amount) {
+      window.location.href = 'index.html#payment';
+      return;
+    }
+
+    retryBtn.disabled = true;
+    retryBtn.textContent = 'Перенаправляем...';
+
+    try {
+      const response = await fetch('/api/create-payment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          amount,
+          description,
+          customerEmail: bookingDraft?.customerEmail || '',
+          customerName: bookingDraft?.customerName || '',
+          customerPhone: bookingDraft?.customerPhone || '',
+          serviceName: bookingDraft?.serviceName || description,
+          sessionDate: bookingDraft?.sessionDate || '',
+          sessionTime: bookingDraft?.sessionTime || '',
+          sessionDatetime: bookingDraft?.sessionDatetime || '',
+          comment: bookingDraft?.comment || '',
+          orderId: `retry_${Date.now()}`
+        })
+      });
+
+      const data = await response.json().catch(() => null);
+      if (!response.ok || !data?.success || !data?.confirmationUrl) {
+        throw new Error(data?.error || `HTTP ${response.status}`);
+      }
+
+      if (bookingDraft) {
+        saveDraft(data.paymentId, {
+          ...bookingDraft,
+          token: data.statusToken || '',
+          amount,
+          description
+        });
+        if (paymentId) clearDraft(paymentId);
+      }
+
+      window.location.href = data.confirmationUrl;
+    } catch (error) {
+      retryBtn.disabled = false;
+      retryBtn.textContent = 'Попробовать снова';
+      alert('Не удалось заново открыть оплату в ЮKassa. Попробуйте ещё раз или начните запись заново.');
+    }
+  }
+
+  if (retryBtn) {
+    retryBtn.addEventListener('click', retryPayment);
+  }
+
+  if (paymentId) {
     const params = new URLSearchParams();
     if (paymentToken) params.set('token', paymentToken);
 
@@ -164,15 +261,24 @@
       .then(data => {
         if (data.success && data.payment) {
           const p = data.payment;
+          paymentDetails = p;
           document.getElementById('detail-status').textContent = p.status || '—';
           document.getElementById('detail-amount').textContent = p.amount ? `${p.amount} ₽` : '—';
           document.getElementById('detail-id').textContent = p.id || '—';
           document.getElementById('details').style.display = 'block';
+
+          if (p.status === 'canceled' || p.status === 'expired') {
+            discardPaymentIfPossible();
+          }
         }
       })
       .catch(() => {
         // Не показываем детали если ошибка
       });
+  }
+
+  if (reason === 'cancelled' || reason === 'canceled' || reason === 'expired') {
+    discardPaymentIfPossible();
   }
 </script>
 </body>

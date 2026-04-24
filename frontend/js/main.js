@@ -764,6 +764,14 @@ async function createPayment() {
       body: JSON.stringify({
         amount: state.price,
         description: state.serviceLabel,
+        customerEmail: state.email || '',
+        customerName: state.fio,
+        customerPhone: state.phone,
+        serviceName: state.serviceLabel,
+        sessionDate,
+        sessionTime,
+        sessionDatetime,
+        comment: state.comment || '',
         orderId: `order_${Date.now()}`
       })
     });
@@ -793,6 +801,8 @@ async function createPayment() {
     if (data.success && data.confirmationUrl) {
       savePaymentDraft(data.paymentId, {
         token: data.statusToken || '',
+        amount: state.price,
+        description: state.serviceLabel,
         customerEmail: state.email || '',
         customerName: state.fio,
         customerPhone: state.phone,

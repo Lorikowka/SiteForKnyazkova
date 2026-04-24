@@ -62,6 +62,7 @@ db.serialize(() => {
       customer_phone TEXT,
       customer_name TEXT,
       service_name TEXT,
+      comment TEXT,
       payment_method TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       paid_at DATETIME,
@@ -121,6 +122,30 @@ db.serialize(() => {
     } else {
       db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_provider_payment_id ON payments(provider_payment_id) WHERE provider_payment_id IS NOT NULL`);
     }
+
+    if (!columns.has('comment')) {
+      db.run(`ALTER TABLE payments ADD COLUMN comment TEXT`, (alterErr) => {
+        if (alterErr) {
+          console.error('❌ Ошибка миграции comment в payments:', alterErr.message);
+        }
+      });
+    }
+  });
+
+  db.all(`PRAGMA table_info(sessions)`, [], (err, rows) => {
+    if (err) {
+      console.error('❌ Ошибка проверки схемы sessions:', err.message);
+      return;
+    }
+
+    const columns = new Set(rows.map(row => row.name));
+    if (!columns.has('comment')) {
+      db.run(`ALTER TABLE sessions ADD COLUMN comment TEXT`, (alterErr) => {
+        if (alterErr) {
+          console.error('❌ Ошибка миграции comment в sessions:', alterErr.message);
+        }
+      });
+    }
   });
 });
 
@@ -135,21 +160,21 @@ function createPayment(data) {
   return new Promise((resolve, reject) => {
     const {
       id, provider_payment_id, order_id, amount, currency, status, description,
-      customer_email, customer_phone, customer_name, service_name,
+      customer_email, customer_phone, customer_name, service_name, comment,
       payment_method, metadata
     } = data;
 
     const sql = `
       INSERT INTO payments (
         id, provider_payment_id, order_id, amount, currency, status, description,
-        customer_email, customer_phone, customer_name, service_name,
+        customer_email, customer_phone, customer_name, service_name, comment,
         payment_method, metadata
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
 
     const params = [
       id, provider_payment_id || null, order_id, amount, currency || 'RUB', status || 'pending', description,
-      customer_email, customer_phone, customer_name, service_name,
+      customer_email, customer_phone, customer_name, service_name, comment || null,
       payment_method, metadata ? JSON.stringify(metadata) : null
     ];
 
@@ -190,6 +215,16 @@ function getPayment(paymentId) {
   });
 }
 
+function deletePayment(paymentId) {
+  return new Promise((resolve, reject) => {
+    const sql = `DELETE FROM payments WHERE id = ?`;
+    db.run(sql, [paymentId], function(err) {
+      if (err) reject(err);
+      else resolve({ changes: this.changes });
+    });
+  });
+}
+
 /**
  * Получить все платежи
  */
@@ -213,6 +248,28 @@ function getPaymentByProviderId(providerPaymentId) {
   });
 }
 
+function getPaymentsByStatuses(statuses = [], limit = 500) {
+  return new Promise((resolve, reject) => {
+    if (!Array.isArray(statuses) || statuses.length === 0) {
+      resolve([]);
+      return;
+    }
+
+    const placeholders = statuses.map(() => '?').join(', ');
+    const sql = `
+      SELECT * FROM payments
+      WHERE status IN (${placeholders})
+      ORDER BY created_at DESC
+      LIMIT ?
+    `;
+
+    db.all(sql, [...statuses, limit], (err, rows) => {
+      if (err) reject(err);
+      else resolve(rows);
+    });
+  });
+}
+
 function setPaymentProviderId(paymentId, providerPaymentId) {
   return new Promise((resolve, reject) => {
     const sql = `UPDATE payments SET provider_payment_id = ? WHERE id = ?`;
@@ -230,6 +287,7 @@ function updatePaymentBookingDetails(paymentId, data) {
       customer_phone,
       customer_name,
       service_name,
+      comment,
       metadata
     } = data;
 
@@ -239,6 +297,7 @@ function updatePaymentBookingDetails(paymentId, data) {
           customer_phone = ?,
           customer_name = ?,
           service_name = ?,
+          comment = ?,
           metadata = ?
       WHERE id = ?
     `;
@@ -250,6 +309,7 @@ function updatePaymentBookingDetails(paymentId, data) {
         customer_phone || null,
         customer_name || null,
         service_name || null,
+        comment || null,
         metadata ? JSON.stringify(metadata) : null,
         paymentId
       ],
@@ -416,6 +476,36 @@ function deleteSession(sessionId) {
   });
 }
 
+function deleteSessionsByPaymentId(paymentId) {
+  return new Promise((resolve, reject) => {
+    const sql = `DELETE FROM sessions WHERE payment_id = ?`;
+    db.run(sql, [paymentId], function(err) {
+      if (err) reject(err);
+      else resolve({ changes: this.changes });
+    });
+  });
+}
+
+function deleteAllSessions() {
+  return new Promise((resolve, reject) => {
+    const sql = `DELETE FROM sessions`;
+    db.run(sql, [], function(err) {
+      if (err) reject(err);
+      else resolve({ changes: this.changes });
+    });
+  });
+}
+
+function deleteAllPayments() {
+  return new Promise((resolve, reject) => {
+    const sql = `DELETE FROM payments`;
+    db.run(sql, [], function(err) {
+      if (err) reject(err);
+      else resolve({ changes: this.changes });
+    });
+  });
+}
+
 /**
  * Получить сеанс по ID
  */
@@ -528,7 +618,9 @@ module.exports = {
   createPayment,
   updatePaymentStatus,
   getPayment,
+  deletePayment,
   getPaymentByProviderId,
+  getPaymentsByStatuses,
   setPaymentProviderId,
   updatePaymentBookingDetails,
   getAllPayments,
@@ -542,6 +634,9 @@ module.exports = {
   markReminderSent,
   updateSessionStatus,
   deleteSession,
+  deleteSessionsByPaymentId,
+  deleteAllSessions,
+  deleteAllPayments,
   getSession,
   getSessionsByPaymentId,
   getBusySessionByDatetime,

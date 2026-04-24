@@ -227,6 +227,40 @@ function hasValidPaymentToken(paymentRow, providedToken) {
   return Boolean(metadata.statusToken && providedToken === metadata.statusToken);
 }
 
+async function discardPaymentIfUnused(paymentId) {
+  const payment = await db.getPayment(paymentId);
+  if (!payment) {
+    return { discarded: false, reason: 'not_found' };
+  }
+
+  if (!['canceled', 'expired'].includes(payment.status)) {
+    return { discarded: false, reason: payment.status || 'unknown_status' };
+  }
+
+  const sessions = await db.getSessionsByPaymentId(paymentId);
+  if (sessions.length > 0) {
+    return { discarded: false, reason: 'has_sessions' };
+  }
+
+  const result = await db.deletePayment(paymentId);
+  return { discarded: Boolean(result.changes) };
+}
+
+function getReservedSlotMetadata(paymentRow) {
+  const metadata = getStoredPaymentMetadata(paymentRow);
+  if (!metadata.sessionDate || !metadata.sessionTime || !metadata.sessionDatetime) {
+    return null;
+  }
+
+  return {
+    paymentId: paymentRow.id,
+    status: paymentRow.status,
+    sessionDate: metadata.sessionDate,
+    sessionTime: metadata.sessionTime,
+    sessionDatetime: metadata.sessionDatetime
+  };
+}
+
 function canAccessPaymentDetails(req, paymentRow) {
   const providedApiKey = req.headers['x-api-key'];
   if (API_KEY && providedApiKey === API_KEY) {
@@ -335,6 +369,14 @@ app.post('/api/create-payment',
     body('amount').optional().isFloat({ min: 10, max: 250000 }),
     body('description').optional().isString().isLength({ max: 200 }),
     body('orderId').optional().isString().isLength({ max: 50 }).matches(/^[a-zA-Z0-9_-]+$/),
+    body('customerEmail').optional({ values: 'falsy' }).isEmail().normalizeEmail(),
+    body('customerName').optional().isString().trim().isLength({ min: 2, max: 200 }),
+    body('customerPhone').optional().isString().trim().isLength({ min: 5, max: 20 }),
+    body('serviceName').optional().isString().trim().isLength({ min: 2, max: 100 }),
+    body('sessionDate').optional().isString().trim().isLength({ min: 8, max: 20 }),
+    body('sessionTime').optional().isString().trim().isLength({ min: 4, max: 10 }),
+    body('sessionDatetime').optional().isString().trim().isLength({ min: 16, max: 40 }),
+    body('comment').optional().isString().isLength({ max: 500 }),
     handleValidationErrors
   ],
   async (req, res) => {
@@ -342,7 +384,15 @@ app.post('/api/create-payment',
       const {
         amount = 3500,
         description = 'Консультация психолога',
-        orderId
+        orderId,
+        customerEmail,
+        customerName,
+        customerPhone,
+        serviceName,
+        sessionDate,
+        sessionTime,
+        sessionDatetime,
+        comment
       } = req.body;
 
       const orderNumber = orderId || `order_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
@@ -352,12 +402,43 @@ app.post('/api/create-payment',
       const paymentMetadata = {
         orderId: orderNumber,
         statusToken,
-        cancelToken
+        cancelToken,
+        customerEmail: customerEmail || '',
+        customerName: customerName || '',
+        customerPhone: customerPhone || '',
+        serviceName: serviceName || '',
+        sessionDate: sessionDate || '',
+        sessionTime: sessionTime || '',
+        sessionDatetime: sessionDatetime || '',
+        comment: comment || ''
       };
 
       logger.info(`📝 Создание платежа: ${orderNumber}, сумма: ${amount}₽`);
 
       // Сохраняем платёж в БД
+      if (sessionDatetime) {
+        const busySession = await db.getBusySessionByDatetime(sessionDatetime);
+        if (busySession) {
+          return res.status(409).json({
+            success: false,
+            error: 'Выбранное время уже занято. Пожалуйста, выберите другой слот.'
+          });
+        }
+
+        const reservedPayments = await db.getPaymentsByStatuses(['pending', 'succeeded', 'waiting_for_capture'], 500);
+        const blockingPayment = reservedPayments.find(item => {
+          const reserved = getReservedSlotMetadata(item);
+          return reserved && reserved.sessionDatetime === sessionDatetime;
+        });
+
+        if (blockingPayment) {
+          return res.status(409).json({
+            success: false,
+            error: 'Это время уже забронировано другим клиентом. Пожалуйста, выберите другой слот.'
+          });
+        }
+      }
+
       await db.createPayment({
         id: paymentId,
         provider_payment_id: null,
@@ -366,10 +447,11 @@ app.post('/api/create-payment',
         currency: 'RUB',
         status: 'pending',
         description,
-        customer_email: null,
-        customer_phone: null,
-        customer_name: null,
-        service_name: null,
+        customer_email: customerEmail || null,
+        customer_phone: customerPhone || null,
+        customer_name: customerName || null,
+        service_name: serviceName || null,
+        comment: comment || null,
         metadata: paymentMetadata
       });
 
@@ -511,6 +593,68 @@ app.get('/api/payment/:id', async (req, res) => {
 // ——————————————————————————————
 // API: WEBHOOK ОТ ЮKASSA
 // ——————————————————————————————
+app.post('/api/payments/:id/discard',
+  strictLimiter,
+  [
+    body('token').isString().isLength({ min: 10, max: 200 }),
+    handleValidationErrors
+  ],
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { token } = req.body;
+      const payment = await db.getPayment(id);
+
+      if (!payment) {
+        return res.json({ success: true, discarded: false, reason: 'not_found' });
+      }
+
+      if (!hasValidPaymentToken(payment, token)) {
+        return res.status(403).json({ success: false, error: 'Неверный токен подтверждения' });
+      }
+
+      if (payment.status === 'pending' && !MOCK_MODE) {
+        try {
+          const checkController = new AbortController();
+          const checkTimeout = setTimeout(() => checkController.abort(), 5000);
+          const externalPaymentId = payment.provider_payment_id || id;
+          const ykResponse = await fetch(
+            `${YOOKASSA_BASE_URL}/payments/${externalPaymentId}`,
+            {
+              headers: { 'Authorization': `Basic ${AUTH_HEADER}` },
+              signal: checkController.signal
+            }
+          );
+          clearTimeout(checkTimeout);
+
+          const ykPayment = await ykResponse.json();
+          if (ykPayment.status === 'succeeded' || ykPayment.paid) {
+            await db.updatePaymentStatus(id, 'succeeded', ykPayment.paid_at);
+            return res.json({ success: true, discarded: false, reason: 'succeeded' });
+          }
+
+          if (ykPayment.status === 'canceled' || ykPayment.status === 'expired') {
+            await db.updatePaymentStatus(id, ykPayment.status);
+            payment.status = ykPayment.status;
+          }
+        } catch (error) {
+          logger.warn(`Не удалось уточнить статус платежа ${id} перед очисткой: ${error.message}`);
+        }
+      }
+
+      if (!['canceled', 'expired'].includes(payment.status)) {
+        return res.json({ success: true, discarded: false, reason: payment.status || 'unknown_status' });
+      }
+
+      const result = await discardPaymentIfUnused(id);
+      res.json({ success: true, ...result, status: payment.status });
+    } catch (error) {
+      logger.error(`❌ Ошибка очистки платежа: ${error.message}`);
+      res.status(500).json({ success: false, error: 'Не удалось очистить платёж' });
+    }
+  }
+);
+
 app.post('/api/webhook', async (req, res) => {
   try {
     const event = req.body;
@@ -567,6 +711,10 @@ app.post('/api/webhook', async (req, res) => {
       }
 
       await db.updatePaymentStatus(existingPayment.id, object.status);
+      const cleanupResult = await discardPaymentIfUnused(existingPayment.id);
+      if (cleanupResult.discarded) {
+        logger.info(`🧹 Удалён неиспользованный платёж после ${object.status}: ${existingPayment.id}`);
+      }
       logger.info(`❌ Платёж отменён/истёк: ${object.id}`);
 
       await sendTelegramNotification(
@@ -691,6 +839,93 @@ app.delete('/api/sessions/:id',
   }
 );
 
+app.delete('/api/payments/:id',
+  requireApiKey,
+  rateLimit({ windowMs: 60000, max: 10 }),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const payment = await db.getPayment(id);
+
+      if (!payment) {
+        return res.status(404).json({ success: false, error: 'Платёж не найден' });
+      }
+
+      const deletedSessions = await db.deleteSessionsByPaymentId(id);
+      const deletedPayment = await db.deletePayment(id);
+
+      logger.info(`🧹 Безопасно удалён платёж ${id} и связанные записи (${deletedSessions.changes} sessions)`);
+      res.json({
+        success: true,
+        deletedPayment: deletedPayment.changes,
+        deletedSessions: deletedSessions.changes
+      });
+    } catch (error) {
+      logger.error(`❌ Ошибка безопасного удаления платежа: ${error.message}`);
+      res.status(500).json({ success: false, error: error.message });
+    }
+  }
+);
+
+app.post('/api/admin/database/cleanup',
+  requireApiKey,
+  rateLimit({ windowMs: 60000, max: 5 }),
+  [
+    body('scope').optional().isIn(['all', 'payment']),
+    body('paymentId').optional().isString().isLength({ max: 200 }),
+    body('confirm').optional().isString().isLength({ max: 50 }),
+    handleValidationErrors
+  ],
+  async (req, res) => {
+    try {
+      const { scope = 'all', paymentId, confirm } = req.body;
+
+      if (scope === 'payment') {
+        if (!paymentId) {
+          return res.status(400).json({ success: false, error: 'Укажите paymentId для точечной очистки' });
+        }
+
+        const payment = await db.getPayment(paymentId);
+        if (!payment) {
+          return res.status(404).json({ success: false, error: 'Платёж не найден' });
+        }
+
+        const deletedSessions = await db.deleteSessionsByPaymentId(paymentId);
+        const deletedPayment = await db.deletePayment(paymentId);
+
+        logger.info(`🧹 Точечная очистка БД для платежа ${paymentId}`);
+        return res.json({
+          success: true,
+          scope,
+          deletedPayment: deletedPayment.changes,
+          deletedSessions: deletedSessions.changes
+        });
+      }
+
+      if (confirm !== 'DELETE_ALL') {
+        return res.status(400).json({
+          success: false,
+          error: 'Для полной очистки передайте confirm=DELETE_ALL'
+        });
+      }
+
+      const deletedSessions = await db.deleteAllSessions();
+      const deletedPayments = await db.deleteAllPayments();
+
+      logger.warn(`🧨 Выполнена полная очистка БД: sessions=${deletedSessions.changes}, payments=${deletedPayments.changes}`);
+      res.json({
+        success: true,
+        scope: 'all',
+        deletedSessions: deletedSessions.changes,
+        deletedPayments: deletedPayments.changes
+      });
+    } catch (error) {
+      logger.error(`❌ Ошибка очистки БД: ${error.message}`);
+      res.status(500).json({ success: false, error: error.message });
+    }
+  }
+);
+
 app.post('/api/payments/:id/confirm-booking',
   strictLimiter,
   [
@@ -789,6 +1024,7 @@ app.post('/api/payments/:id/confirm-booking',
         customer_phone: customerPhone,
         customer_name: customerName,
         service_name: serviceName,
+        comment: comment || null,
         metadata
       });
 
@@ -980,6 +1216,20 @@ app.get('/api/schedule', async (req, res) => {
         const dateStr = s.session_date;
         if (!busyMap[dateStr]) busyMap[dateStr] = [];
         busyMap[dateStr].push(s.session_time);
+      }
+    }
+
+    const reservedPayments = await db.getPaymentsByStatuses(['pending', 'succeeded', 'waiting_for_capture'], 500);
+    for (const payment of reservedPayments) {
+      const reserved = getReservedSlotMetadata(payment);
+      if (!reserved) continue;
+
+      const paymentSessions = await db.getSessionsByPaymentId(payment.id);
+      if (paymentSessions.length > 0) continue;
+
+      if (!busyMap[reserved.sessionDate]) busyMap[reserved.sessionDate] = [];
+      if (!busyMap[reserved.sessionDate].includes(reserved.sessionTime)) {
+        busyMap[reserved.sessionDate].push(reserved.sessionTime);
       }
     }
 
