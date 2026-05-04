@@ -174,3 +174,7 @@ npm run dev
 
 MIT
 "# SiteForKnyazkova" 
+
+## QA
+
+Документация для ручной и технической проверки сайта: [QA_CHECKLIST.md](QA_CHECKLIST.md).

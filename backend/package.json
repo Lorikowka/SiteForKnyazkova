@@ -6,6 +6,8 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
+    "test": "node test/run-tests.js",
+    "check": "node --check server.js && node --check database.js && npm run test",
     "security:check": "node security-check.js"
   },
   "keywords": [

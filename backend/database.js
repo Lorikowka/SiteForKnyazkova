@@ -6,9 +6,16 @@
 
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
+const { runMigrations } = require('./migrations');
 
 // Путь к базе данных
 const DB_PATH = path.join(__dirname, 'data', 'payments.db');
+let readyResolve;
+let readyReject;
+const ready = new Promise((resolve, reject) => {
+  readyResolve = resolve;
+  readyReject = reject;
+});
 
 // Создаём подключение
 const db = new sqlite3.Database(DB_PATH, (err) => {
@@ -61,6 +68,7 @@ db.serialize(() => {
       customer_email TEXT,
       customer_phone TEXT,
       customer_name TEXT,
+      service_id TEXT,
       service_name TEXT,
       comment TEXT,
       payment_method TEXT,
@@ -78,6 +86,7 @@ db.serialize(() => {
       client_name TEXT NOT NULL,
       client_phone TEXT NOT NULL,
       client_email TEXT,
+      service_id TEXT,
       service_name TEXT NOT NULL,
       session_date TEXT NOT NULL,
       session_time TEXT NOT NULL,
@@ -130,6 +139,13 @@ db.serialize(() => {
         }
       });
     }
+    if (!columns.has('service_id')) {
+      db.run(`ALTER TABLE payments ADD COLUMN service_id TEXT`, (alterErr) => {
+        if (alterErr) {
+          console.error('❌ Ошибка миграции service_id в payments:', alterErr.message);
+        }
+      });
+    }
   });
 
   db.all(`PRAGMA table_info(sessions)`, [], (err, rows) => {
@@ -146,6 +162,13 @@ db.serialize(() => {
         }
       });
     }
+    if (!columns.has('service_id')) {
+      db.run(`ALTER TABLE sessions ADD COLUMN service_id TEXT`, (alterErr) => {
+        if (alterErr) {
+          console.error('❌ Ошибка миграции service_id в sessions:', alterErr.message);
+        }
+      });
+    }
   });
 });
 
@@ -156,25 +179,32 @@ db.serialize(() => {
 /**
  * Создать запись о платеже
  */
+runMigrations(db)
+  .then(readyResolve)
+  .catch((err) => {
+    console.error('Database migration error:', err.message);
+    readyReject(err);
+  });
+
 function createPayment(data) {
   return new Promise((resolve, reject) => {
     const {
       id, provider_payment_id, order_id, amount, currency, status, description,
-      customer_email, customer_phone, customer_name, service_name, comment,
+      customer_email, customer_phone, customer_name, service_id, service_name, comment,
       payment_method, metadata
     } = data;
 
     const sql = `
       INSERT INTO payments (
         id, provider_payment_id, order_id, amount, currency, status, description,
-        customer_email, customer_phone, customer_name, service_name, comment,
+        customer_email, customer_phone, customer_name, service_id, service_name, comment,
         payment_method, metadata
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
 
     const params = [
       id, provider_payment_id || null, order_id, amount, currency || 'RUB', status || 'pending', description,
-      customer_email, customer_phone, customer_name, service_name, comment || null,
+      customer_email, customer_phone, customer_name, service_id || null, service_name, comment || null,
       payment_method, metadata ? JSON.stringify(metadata) : null
     ];
 
@@ -286,6 +316,7 @@ function updatePaymentBookingDetails(paymentId, data) {
       customer_email,
       customer_phone,
       customer_name,
+      service_id,
       service_name,
       comment,
       metadata
@@ -296,6 +327,7 @@ function updatePaymentBookingDetails(paymentId, data) {
       SET customer_email = ?,
           customer_phone = ?,
           customer_name = ?,
+          service_id = ?,
           service_name = ?,
           comment = ?,
           metadata = ?
@@ -308,6 +340,7 @@ function updatePaymentBookingDetails(paymentId, data) {
         customer_email || null,
         customer_phone || null,
         customer_name || null,
+        service_id || null,
         service_name || null,
         comment || null,
         metadata ? JSON.stringify(metadata) : null,
@@ -341,20 +374,20 @@ function createSession(data) {
   return new Promise((resolve, reject) => {
     const {
       payment_id, client_name, client_phone, client_email,
-      service_name, session_date, session_time, session_datetime,
+      service_id, service_name, session_date, session_time, session_datetime,
       amount, comment, status
     } = data;
 
     const sql = `
       INSERT INTO sessions (
         payment_id, client_name, client_phone, client_email,
-        service_name, session_date, session_time, session_datetime,
+        service_id, service_name, session_date, session_time, session_datetime,
         amount, comment, status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
 
     const params = [
-      payment_id, client_name, client_phone, client_email,
+      payment_id, client_name, client_phone, client_email, service_id || null,
       service_name, session_date, session_time, session_datetime,
       amount, comment, status || 'scheduled'
     ];
@@ -400,6 +433,42 @@ function getPastSessions(limit = 50, offset = 0) {
     db.all(sql, [limit, offset], (err, rows) => {
       if (err) reject(err);
       else resolve(rows);
+    });
+  });
+}
+
+function buildSessionFilter({ past = null, from = '', to = '', status = '' } = {}) {
+  const where = [];
+  const params = [];
+
+  if (from) { where.push('session_datetime >= ?'); params.push(from); }
+  if (to) { where.push('session_datetime < ?'); params.push(to); }
+  if (status) { where.push('status = ?'); params.push(status); }
+  if (!from && !to && past !== null) {
+    where.push(past ? "session_datetime < datetime('now', 'localtime')" : "session_datetime >= datetime('now', 'localtime')");
+  }
+
+  return { clause: where.length ? 'WHERE ' + where.join(' AND ') : '', params };
+}
+
+function getSessionsByRange(filters = {}, limit = 100, offset = 0) {
+  return new Promise((resolve, reject) => {
+    const built = buildSessionFilter(filters);
+    const sql = 'SELECT * FROM sessions ' + built.clause + ' ORDER BY session_datetime ASC LIMIT ? OFFSET ?';
+    db.all(sql, [...built.params, limit, offset], (err, rows) => {
+      if (err) reject(err);
+      else resolve(rows);
+    });
+  });
+}
+
+function countSessionsByRange(filters = {}) {
+  return new Promise((resolve, reject) => {
+    const built = buildSessionFilter(filters);
+    const sql = 'SELECT COUNT(*) AS total FROM sessions ' + built.clause;
+    db.get(sql, built.params, (err, row) => {
+      if (err) reject(err);
+      else resolve(row?.total || 0);
     });
   });
 }
@@ -610,6 +679,7 @@ function sanitizeInput(input) {
 
 module.exports = {
   db,
+  ready,
   // Утилиты
   escapeHtml,
   sanitizeInput,
@@ -629,7 +699,9 @@ module.exports = {
   createSession,
   getAllSessions,
   getPastSessions,
+  getSessionsByRange,
   countSessions,
+  countSessionsByRange,
   getSessionsForReminder,
   markReminderSent,
   updateSessionStatus,

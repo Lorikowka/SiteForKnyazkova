@@ -2,6 +2,18 @@
  * main.js — Екатерина Князькова | Психолог
  * Объединённая версия с полной поддержкой ЮKassa
  */
+function sanitizeText(value) {
+  return String(value || '').replace(/[&<>'"]/g, char => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;'
+  }[char]));
+}
+
+// External links should use rel="noopener noreferrer" when added dynamically.
+
 
 // ═══════════════════════════════════════════
 // АВТОСКРОЛЛ К ОПЛАТЕ ПРИ ЗАГРУЗКЕ
@@ -291,19 +303,26 @@ function dateKey(d) {
 }
 
 // ---- РАСПИСАНИЕ (загружается с бэкенда) ----
+let ALL_SLOTS = {};
 let FREE_SLOTS = {};
 let BUSY_SLOTS = {};
+let SLOT_DETAILS = {};
 let scheduleLoaded = false;
 let scheduleErrorMessage = '';
 
-async function loadSchedule() {
+async function loadSchedule(serviceId = '') {
   try {
-    const response = await fetch('/api/schedule');
+    scheduleLoaded = false;
+    const params = new URLSearchParams();
+    if (serviceId) params.set('service', serviceId);
+    const response = await fetch(`/api/schedule?${params.toString()}`);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
     if (data.success) {
+      ALL_SLOTS = data.allSlots || data.freeSlots || {};
       FREE_SLOTS = data.freeSlots || {};
       BUSY_SLOTS = data.busySlots || {};
+      SLOT_DETAILS = data.slotDetails || {};
       scheduleLoaded = true;
       scheduleErrorMessage = '';
       console.log(`📅 Расписание загружено: ${Object.keys(FREE_SLOTS).length} дней`);
@@ -313,7 +332,9 @@ async function loadSchedule() {
   } catch (error) {
     console.error('❌ Ошибка загрузки расписания:', error);
     FREE_SLOTS = {};
+    ALL_SLOTS = {};
     BUSY_SLOTS = {};
+    SLOT_DETAILS = {};
     scheduleLoaded = true;
     scheduleErrorMessage = 'Не удалось загрузить актуальное расписание. Попробуйте обновить страницу чуть позже.';
     if (state.currentStep === 2) renderCalendar();
@@ -324,6 +345,7 @@ async function loadSchedule() {
 const state = {
   currentStep: 1,
   fio: '', phone: '', email: '', service: '', serviceLabel: '',
+  serviceType: 'individual', serviceCapacity: 1,
   price: 0, comment: '',
   selectedDate: null, selectedTime: null,
   calYear: new Date().getFullYear(), calMonth: new Date().getMonth(),
@@ -370,6 +392,97 @@ const sumPrice   = document.getElementById('sum-price');
 const successModal = document.getElementById('success-modal');
 const modalClose   = document.getElementById('modal-close');
 const successText  = document.getElementById('success-text');
+
+const reviewForm = document.getElementById('review-form');
+const reviewNameInput = document.getElementById('review-name');
+const reviewContactInput = document.getElementById('review-contact');
+const reviewTextInput = document.getElementById('review-text');
+const reviewSubmit = document.getElementById('review-submit');
+const reviewStatus = document.getElementById('review-status');
+
+function setReviewFieldState(input, errorEl, isValid) {
+  if (!input || !errorEl) return;
+  input.classList.toggle('error', !isValid);
+  errorEl.classList.toggle('visible', !isValid);
+}
+
+function setReviewStatus(text, type = '') {
+  if (!reviewStatus) return;
+  reviewStatus.textContent = text;
+  reviewStatus.classList.remove('success', 'error');
+  if (type) reviewStatus.classList.add(type);
+}
+
+function getSelectedReviewRating() {
+  return reviewForm?.querySelector('input[name="rating"]:checked')?.value || '';
+}
+
+function validateReviewForm() {
+  const name = reviewNameInput?.value.trim() || '';
+  const contact = reviewContactInput?.value.trim() || '';
+  const message = reviewTextInput?.value.trim() || '';
+  const rating = Number(getSelectedReviewRating());
+
+  const isNameValid = name.length >= 2;
+  const isContactValid = contact.length >= 3;
+  const isMessageValid = message.length >= 10;
+  const isRatingValid = Number.isInteger(rating) && rating >= 1 && rating <= 5;
+
+  setReviewFieldState(reviewNameInput, document.getElementById('review-name-error'), isNameValid);
+  setReviewFieldState(reviewContactInput, document.getElementById('review-contact-error'), isContactValid);
+  setReviewFieldState(reviewTextInput, document.getElementById('review-text-error'), isMessageValid);
+  document.getElementById('review-rating-error')?.classList.toggle('visible', !isRatingValid);
+
+  return isNameValid && isContactValid && isMessageValid && isRatingValid;
+}
+
+if (reviewForm) {
+  reviewForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    setReviewStatus('');
+
+    if (!validateReviewForm()) {
+      setReviewStatus('Проверьте заполнение полей.', 'error');
+      return;
+    }
+
+    const payload = {
+      rating: Number(getSelectedReviewRating()),
+      name: reviewNameInput.value.trim(),
+      contact: reviewContactInput.value.trim(),
+      message: reviewTextInput.value.trim()
+    };
+
+    try {
+      if (reviewSubmit) {
+        reviewSubmit.disabled = true;
+        reviewSubmit.textContent = 'Отправляем...';
+      }
+
+      const response = await fetch(`${BACKEND_URL}/api/reviews`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || 'Не удалось отправить отзыв');
+      }
+
+      reviewForm.reset();
+      setReviewStatus('Спасибо! Отзыв отправлен.', 'success');
+    } catch (error) {
+      console.error('Ошибка отправки отзыва:', error);
+      setReviewStatus(error.message || 'Не удалось отправить отзыв. Попробуйте позже.', 'error');
+    } finally {
+      if (reviewSubmit) {
+        reviewSubmit.disabled = false;
+        reviewSubmit.textContent = 'Отправить отзыв';
+      }
+    }
+  });
+}
 
 if (phoneInput) {
   phoneInput.addEventListener('input', function () {
@@ -467,10 +580,16 @@ if (btnStep1) {
     state.email        = emailInput.value.trim();
     state.service      = serviceSelect.value;
     state.serviceLabel = opt.text;
+    state.serviceType  = opt.dataset.type || (state.service === 'group' ? 'group' : 'individual');
+    state.serviceCapacity = parseInt(opt.dataset.capacity || (state.service === 'group' ? 10 : 1), 10);
     state.price        = parseInt(opt.dataset.price || 0, 10);
     state.comment      = requestTA.value.trim();
+    state.selectedDate = null;
+    state.selectedTime = null;
+    btnStep2.disabled  = true;
+    selectedSlotInfo.classList.add('hidden');
     goToStep(2);
-    renderCalendar();
+    loadSchedule(state.service).then(renderCalendar);
   });
 }
 
@@ -509,6 +628,8 @@ async function loadServices() {
         option.value = svc.id;
         option.textContent = `${svc.name} — ${svc.price.toLocaleString('ru-RU')} ₽`;
         option.dataset.price = svc.price;
+        option.dataset.type = svc.type || 'individual';
+        option.dataset.capacity = svc.capacity || 1;
         select.appendChild(option);
       });
 
@@ -594,6 +715,7 @@ function renderCalendar() {
 
     const isPast      = d < today;
     const isToday     = d.getTime() === today.getTime();
+    const hasSlots     = !isPast && ALL_SLOTS[key] && ALL_SLOTS[key].length > 0;
     const isAvailable = !isPast && FREE_SLOTS[key] && FREE_SLOTS[key].length > 0;
     const isSelected  = state.selectedDate && dateKey(state.selectedDate) === key;
 
@@ -603,7 +725,7 @@ function renderCalendar() {
     if (isToday)          el.classList.add('today');
     if (isSelected)       el.classList.add('selected');
 
-    if (isAvailable) el.addEventListener('click', () => selectDate(d));
+    if (hasSlots) el.addEventListener('click', () => selectDate(d));
     calGrid.appendChild(el);
   }
 
@@ -628,22 +750,30 @@ function renderTimeSlots(d) {
   }
 
   const key   = dateKey(d);
+  const allSlots = ALL_SLOTS[key] || [];
   const slots = FREE_SLOTS[key] || [];
   const busy  = BUSY_SLOTS[key] || [];
+  const details = SLOT_DETAILS[key] || {};
 
-  if (slots.length === 0) {
+  if (allSlots.length === 0) {
     slotsHint.style.display = 'block';
     slotsHint.textContent   = 'На выбранную дату нет свободных слотов';
+  } else if (slots.length === 0) {
+    slotsHint.style.display = 'block';
+    slotsHint.textContent   = 'Все слоты на выбранную дату заняты';
   } else {
     slotsHint.style.display = 'none';
   }
 
   timeSlotsCont.innerHTML = '';
-  slots.forEach(time => {
-    const isBusy = busy.includes(time);
+  allSlots.forEach(time => {
+    const isBusy = busy.includes(time) || !slots.includes(time);
+    const slotInfo = details[time];
     const btn    = document.createElement('button');
     btn.className   = 'time-slot' + (isBusy ? ' busy' : '');
-    btn.textContent = time;
+    btn.textContent = state.serviceType === 'group' && slotInfo
+      ? `${time} · ${slotInfo.remaining} мест`
+      : time;
     btn.disabled    = isBusy;
     if (state.selectedTime === time) btn.classList.add('selected');
 
@@ -654,7 +784,10 @@ function renderTimeSlots(d) {
         btn.classList.add('selected');
         btnStep2.disabled = false;
         const dateStr = d.toLocaleDateString('ru-RU', { weekday:'long', day:'numeric', month:'long' });
-        selectedSlotText.textContent = `${dateStr} в ${time}`;
+        const placesText = state.serviceType === 'group' && slotInfo
+          ? `, свободно мест: ${slotInfo.remaining}`
+          : '';
+        selectedSlotText.textContent = `${dateStr} в ${time}${placesText}`;
         selectedSlotInfo.classList.remove('hidden');
       });
     }
@@ -683,7 +816,11 @@ const BACKEND_URL = ''; // Пустая строка = тот же origin
 const PAYMENT_DRAFT_STORAGE_KEY = 'payment_booking_drafts';
 
 function formatLocalSessionDate(date) {
-  return date.toISOString().slice(0, 10);
+  const localDate = new Date(date);
+  const year = localDate.getFullYear();
+  const month = String(localDate.getMonth() + 1).padStart(2, '0');
+  const day = String(localDate.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 function formatLocalSessionDatetime(date, time) {
@@ -702,7 +839,7 @@ function formatLocalSessionDatetime(date, time) {
 
 function getPaymentDrafts() {
   try {
-    return JSON.parse(localStorage.getItem(PAYMENT_DRAFT_STORAGE_KEY) || '{}');
+    return JSON.parse(sessionStorage.getItem(PAYMENT_DRAFT_STORAGE_KEY) || '{}');
   } catch (error) {
     console.warn('Не удалось прочитать черновики оплат:', error);
     return {};
@@ -712,14 +849,14 @@ function getPaymentDrafts() {
 function savePaymentDraft(paymentId, draft) {
   const drafts = getPaymentDrafts();
   drafts[paymentId] = draft;
-  localStorage.setItem(PAYMENT_DRAFT_STORAGE_KEY, JSON.stringify(drafts));
+  sessionStorage.setItem(PAYMENT_DRAFT_STORAGE_KEY, JSON.stringify(drafts));
 }
 
 function clearPaymentDraft(paymentId) {
   const drafts = getPaymentDrafts();
   if (!drafts[paymentId]) return;
   delete drafts[paymentId];
-  localStorage.setItem(PAYMENT_DRAFT_STORAGE_KEY, JSON.stringify(drafts));
+  sessionStorage.setItem(PAYMENT_DRAFT_STORAGE_KEY, JSON.stringify(drafts));
 }
 
 window.bookingDraftStorage = {
@@ -764,6 +901,7 @@ async function createPayment() {
       body: JSON.stringify({
         amount: state.price,
         description: state.serviceLabel,
+        serviceId: state.service,
         customerEmail: state.email || '',
         customerName: state.fio,
         customerPhone: state.phone,
@@ -783,7 +921,7 @@ async function createPayment() {
       console.error('❌ Ошибка сервера:', errorData || response.statusText);
 
       if (response.status === 409) {
-        await loadSchedule();
+        await loadSchedule(state.service);
         goToStep(2);
         btnStep2.disabled = true;
         selectedSlotInfo.classList.add('hidden');
@@ -803,6 +941,7 @@ async function createPayment() {
         token: data.statusToken || '',
         amount: state.price,
         description: state.serviceLabel,
+        serviceId: state.service,
         customerEmail: state.email || '',
         customerName: state.fio,
         customerPhone: state.phone,
@@ -843,6 +982,7 @@ if (modalClose) {
     serviceSelect.value = ''; requestTA.value = '';
     Object.assign(state, {
       fio:'', phone:'', email:'', service:'', serviceLabel:'',
+      serviceType: 'individual', serviceCapacity: 1,
       price:0, comment:'', selectedDate:null, selectedTime:null,
       calYear: new Date().getFullYear(), calMonth: new Date().getMonth(),
     });

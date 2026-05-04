@@ -3,6 +3,10 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: https:; connect-src 'self' https://api.yookassa.ru; frame-src 'self' https://yookassa.ru; base-uri 'self'; form-action 'self'; frame-ancestors 'self'; object-src 'none'">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
+  <meta http-equiv="X-Content-Type-Options" content="nosniff">
+  <meta http-equiv="X-Frame-Options" content="SAMEORIGIN">
   <title>Ошибка оплаты</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@500;700&family=Inter:wght@300;400;500&display=swap" rel="stylesheet">
@@ -140,6 +144,10 @@
     slot_taken_after_payment: {
       title: 'Слот уже занят',
       text: 'Пока проходила оплата, кто-то успел занять это время. Нужно выбрать другой слот или связаться с нами по вопросу возврата.'
+    },
+    duplicate_group_booking: {
+      title: 'Место уже забронировано',
+      text: 'На этот групповой тренинг уже есть запись с этими контактами. Если нужно изменить запись, напишите нам в Telegram.'
     }
   };
 
@@ -150,7 +158,7 @@
 
   function getDraft(paymentId) {
     try {
-      const drafts = JSON.parse(localStorage.getItem('payment_booking_drafts') || '{}');
+      const drafts = JSON.parse(sessionStorage.getItem('payment_booking_drafts') || '{}');
       return drafts[paymentId] || null;
     } catch (error) {
       return null;
@@ -159,9 +167,9 @@
 
   function saveDraft(paymentId, draft) {
     try {
-      const drafts = JSON.parse(localStorage.getItem('payment_booking_drafts') || '{}');
+      const drafts = JSON.parse(sessionStorage.getItem('payment_booking_drafts') || '{}');
       drafts[paymentId] = draft;
-      localStorage.setItem('payment_booking_drafts', JSON.stringify(drafts));
+      sessionStorage.setItem('payment_booking_drafts', JSON.stringify(drafts));
     } catch (error) {
       // noop
     }
@@ -169,10 +177,10 @@
 
   function clearDraft(paymentId) {
     try {
-      const drafts = JSON.parse(localStorage.getItem('payment_booking_drafts') || '{}');
+      const drafts = JSON.parse(sessionStorage.getItem('payment_booking_drafts') || '{}');
       if (!drafts[paymentId]) return;
       delete drafts[paymentId];
-      localStorage.setItem('payment_booking_drafts', JSON.stringify(drafts));
+      sessionStorage.setItem('payment_booking_drafts', JSON.stringify(drafts));
     } catch (error) {
       // noop
     }
@@ -216,6 +224,7 @@
           customerEmail: bookingDraft?.customerEmail || '',
           customerName: bookingDraft?.customerName || '',
           customerPhone: bookingDraft?.customerPhone || '',
+          serviceId: bookingDraft?.serviceId || '',
           serviceName: bookingDraft?.serviceName || description,
           sessionDate: bookingDraft?.sessionDate || '',
           sessionTime: bookingDraft?.sessionTime || '',

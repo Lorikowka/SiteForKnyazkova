@@ -26,9 +26,16 @@ const rateLimit = require('express-rate-limit');
 const { body, validationResult } = require('express-validator');
 const crypto = require('crypto');
 const winston = require('winston');
+const {
+  createApiKeyAuth,
+  verifyWebhookSignature: verifyYooKassaWebhookSignature
+} = require('./lib/security');
+const { createSessionWithSlotGuard } = require('./lib/sessionBooking');
+const { createVkNotifier } = require('./lib/vkNotifier');
 
 // База данных
 const db = require('./database');
+const reviewsDb = require('./reviewsDatabase');
 const { escapeHtml, sanitizeInput, withRetry } = db;
 
 const app = express();
@@ -60,6 +67,7 @@ const logger = winston.createLogger({
   ]
 });
 
+
 // ——————————————————————————————
 // КОНФИДЕНЦИАЛЬНЫЕ ДАННЫЕ
 // ——————————————————————————————
@@ -70,6 +78,9 @@ const SITE_URL = process.env.SITE_URL || 'http://localhost:1488';
 const MOCK_MODE = process.env.MOCK_MODE === 'true';
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+const VK_BOT_TOKEN = process.env.VK_BOT_TOKEN;
+const VK_NOTIFY_PEER_IDS = process.env.VK_NOTIFY_PEER_IDS || process.env.VK_NOTIFY_PEER_ID;
+const VK_API_VERSION = process.env.VK_API_VERSION || '5.199';
 const SMTP_HOST = process.env.SMTP_HOST || 'smtp.gmail.com';
 const SMTP_PORT = process.env.SMTP_PORT || 587;
 const SMTP_USER = process.env.SMTP_USER;
@@ -77,8 +88,18 @@ const SMTP_PASS = process.env.SMTP_PASS;
 const SMTP_FROM = process.env.SMTP_FROM || SMTP_USER;
 const API_KEY = process.env.API_KEY || ''; // Ключ для авторизации админ-запросов
 
+const ADMIN_API_KEYS = process.env.ADMIN_API_KEYS || API_KEY;
+const BOT_API_KEYS = process.env.BOT_API_KEYS || process.env.BOT_API_KEY || API_KEY;
+
 const YOOKASSA_BASE_URL = 'https://api.yookassa.ru/v3';
 const AUTH_HEADER = Buffer.from(`${YOOKASSA_SHOP_ID}:${YOOKASSA_SECRET_KEY}`).toString('base64');
+const vkNotifier = createVkNotifier({
+  token: VK_BOT_TOKEN,
+  peerIds: VK_NOTIFY_PEER_IDS,
+  apiVersion: VK_API_VERSION,
+  logger,
+  sanitize: sanitizeInput
+});
 
 // ——————————————————————————————
 // MIDDLEWARE
@@ -104,7 +125,7 @@ app.use(cors({
   origin: process.env.ALLOWED_ORIGINS?.split(',') || ['http://localhost:1488'],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key', 'X-Bot-API-Key']
 }));
 
 app.use(rateLimit({
@@ -155,6 +176,13 @@ app.get('*', (req, res, next) => {
  * Проверяет HMAC-SHA256 подпись webhook от ЮKassa
  */
 function verifyWebhookSignature(body, signature) {
+  return verifyYooKassaWebhookSignature({
+    body,
+    signature,
+    secret: YOOKASSA_WEBHOOK_SECRET,
+    logger
+  });
+
   if (!YOOKASSA_WEBHOOK_SECRET) {
     logger.error('YOOKASSA_WEBHOOK_SECRET не установлен — webhook отклонён');
     return false;
@@ -191,20 +219,11 @@ const handleValidationErrors = (req, res, next) => {
  * Middleware: проверка API-ключа для админ-эндпоинтов
  * Если API_KEY не установлен — пропускает все запросы (backward compatibility)
  */
-function requireApiKey(req, res, next) {
-  if (!API_KEY) {
-    logger.error('API_KEY не установлен — админ-эндпоинт заблокирован');
-    return res.status(503).json({ success: false, error: 'Админ-API временно недоступен' });
-  }
-
-  const providedKey = req.headers['x-api-key'];
-  if (!providedKey || providedKey !== API_KEY) {
-    logger.warn('🚋 Неверный API-Key');
-    return res.status(401).json({ success: false, error: 'Неверный ключ авторизации' });
-  }
-  next();
-}
-
+const requireApiKey = createApiKeyAuth({
+  logger,
+  adminKeys: ADMIN_API_KEYS,
+  botKeys: BOT_API_KEYS
+});
 function safeJsonParse(value, fallback = {}) {
   if (!value) return fallback;
   if (typeof value === 'object') return value;
@@ -225,6 +244,37 @@ function hasValidPaymentToken(paymentRow, providedToken) {
   if (!providedToken) return false;
   const metadata = getStoredPaymentMetadata(paymentRow);
   return Boolean(metadata.statusToken && providedToken === metadata.statusToken);
+}
+
+function getDateFromSessionDatetime(sessionDatetime) {
+  return typeof sessionDatetime === 'string' && sessionDatetime.includes('T')
+    ? sessionDatetime.split('T')[0]
+    : '';
+}
+
+function getTimeFromSessionDatetime(sessionDatetime) {
+  if (typeof sessionDatetime !== 'string' || !sessionDatetime.includes('T')) return '';
+  return sessionDatetime.split('T')[1]?.slice(0, 5) || '';
+}
+
+function normalizeEmailValue(value = '') {
+  return String(value || '').trim().toLowerCase();
+}
+
+function normalizePhoneValue(value = '') {
+  return String(value || '').replace(/\D/g, '');
+}
+
+function hasSameCustomerIdentity(left = {}, right = {}) {
+  const leftEmail = normalizeEmailValue(left.email);
+  const rightEmail = normalizeEmailValue(right.email);
+  const leftPhone = normalizePhoneValue(left.phone);
+  const rightPhone = normalizePhoneValue(right.phone);
+
+  return Boolean(
+    (leftEmail && rightEmail && leftEmail === rightEmail)
+    || (leftPhone && rightPhone && leftPhone === rightPhone)
+  );
 }
 
 async function discardPaymentIfUnused(paymentId) {
@@ -255,10 +305,128 @@ function getReservedSlotMetadata(paymentRow) {
   return {
     paymentId: paymentRow.id,
     status: paymentRow.status,
-    sessionDate: metadata.sessionDate,
-    sessionTime: metadata.sessionTime,
+    serviceId: metadata.serviceId || paymentRow.service_id || '',
+    serviceName: metadata.serviceName || paymentRow.service_name || '',
+    sessionDate: getDateFromSessionDatetime(metadata.sessionDatetime) || metadata.sessionDate,
+    sessionTime: getTimeFromSessionDatetime(metadata.sessionDatetime) || metadata.sessionTime,
     sessionDatetime: metadata.sessionDatetime
   };
+}
+
+function getServiceConfig(serviceId, serviceName = '') {
+  const normalizedName = String(serviceName || '').toLowerCase();
+  const service = config.services.find(item => item.id === serviceId)
+    || config.services.find(item => normalizedName.includes(String(item.name || '').toLowerCase()))
+    || config.services.find(item => item.id === 'consult')
+    || config.services[0];
+
+  return {
+    ...service,
+    type: service?.type || 'individual',
+    capacity: Math.max(1, Number(service?.capacity) || 1)
+  };
+}
+
+function getRowServiceConfig(row) {
+  const metadata = row?.metadata ? getStoredPaymentMetadata(row) : {};
+  return getServiceConfig(
+    row?.service_id || metadata.serviceId || '',
+    row?.service_name || metadata.serviceName || ''
+  );
+}
+
+function getSlotStateFromEntries(service, entries = []) {
+  const hasIndividual = entries.some(entry => entry.type !== 'group');
+  const groupCount = entries.filter(entry => entry.type === 'group').length;
+
+  if (service.type === 'group') {
+    const remaining = Math.max(0, service.capacity - groupCount);
+    return {
+      available: !hasIndividual && remaining > 0,
+      code: hasIndividual ? 'slot_taken' : (remaining > 0 ? 'available' : 'group_full'),
+      occupied: groupCount,
+      capacity: service.capacity,
+      remaining
+    };
+  }
+
+  return {
+    available: entries.length === 0,
+    code: entries.length === 0 ? 'available' : 'slot_taken',
+    occupied: entries.length,
+    capacity: 1,
+    remaining: entries.length === 0 ? 1 : 0
+  };
+}
+
+async function buildSlotUsageMap({ excludePaymentId = null } = {}) {
+  const usageMap = {};
+  const addEntry = (sessionDate, sessionTime, entry) => {
+    if (!sessionDate || !sessionTime) return;
+    const key = `${sessionDate}|${sessionTime}`;
+    if (!usageMap[key]) usageMap[key] = [];
+    usageMap[key].push(entry);
+  };
+
+  const sessions = await db.getAllSessions(1000);
+  for (const session of sessions) {
+    if (!['scheduled', 'completed'].includes(session.status)) continue;
+    const service = getRowServiceConfig(session);
+    addEntry(
+      getDateFromSessionDatetime(session.session_datetime) || session.session_date,
+      getTimeFromSessionDatetime(session.session_datetime) || session.session_time,
+      {
+      source: 'session',
+      paymentId: session.payment_id,
+      serviceId: service.id,
+      type: service.type,
+      email: session.client_email,
+      phone: session.client_phone
+      }
+    );
+  }
+
+  const reservedPayments = await db.getPaymentsByStatuses(['pending', 'succeeded', 'waiting_for_capture'], 1000);
+  for (const payment of reservedPayments) {
+    if (excludePaymentId && payment.id === excludePaymentId) continue;
+
+    const reserved = getReservedSlotMetadata(payment);
+    if (!reserved) continue;
+
+    const paymentSessions = await db.getSessionsByPaymentId(payment.id);
+    if (paymentSessions.length > 0) continue;
+
+    const service = getServiceConfig(reserved.serviceId || payment.service_id, reserved.serviceName || payment.service_name);
+    addEntry(reserved.sessionDate, reserved.sessionTime, {
+      source: 'payment',
+      paymentId: payment.id,
+      serviceId: service.id,
+      type: service.type,
+      email: payment.customer_email || getStoredPaymentMetadata(payment).customerEmail,
+      phone: payment.customer_phone || getStoredPaymentMetadata(payment).customerPhone
+    });
+  }
+
+  return usageMap;
+}
+
+async function getSlotAvailability({ serviceId, serviceName, sessionDate, sessionTime, excludePaymentId = null }) {
+  const service = getServiceConfig(serviceId, serviceName);
+  const usageMap = await buildSlotUsageMap({ excludePaymentId });
+  const entries = usageMap[`${sessionDate}|${sessionTime}`] || [];
+  return getSlotStateFromEntries(service, entries);
+}
+
+async function getDuplicateGroupBooking({ serviceId, serviceName, sessionDate, sessionTime, customerEmail, customerPhone, excludePaymentId = null }) {
+  const service = getServiceConfig(serviceId, serviceName);
+  if (service.type !== 'group') return null;
+
+  const usageMap = await buildSlotUsageMap({ excludePaymentId });
+  const entries = usageMap[`${sessionDate}|${sessionTime}`] || [];
+  return entries.find(entry => hasSameCustomerIdentity(
+    { email: entry.email, phone: entry.phone },
+    { email: customerEmail, phone: customerPhone }
+  )) || null;
 }
 
 function canAccessPaymentDetails(req, paymentRow) {
@@ -289,6 +457,33 @@ async function sendTelegramNotification(message) {
   } catch (error) {
     logger.error(`Telegram error: ${error.message}`);
   }
+}
+
+function buildBookingNotificationEvent(type, { payment = {}, session = {}, status, reason, comment } = {}) {
+  const metadata = getStoredPaymentMetadata(payment);
+  const sessionDate = session.session_date || metadata.sessionDate || getDateFromSessionDatetime(metadata.sessionDatetime);
+  const sessionTime = session.session_time || metadata.sessionTime || getTimeFromSessionDatetime(metadata.sessionDatetime);
+
+  return {
+    type,
+    clientName: session.client_name || payment.customer_name || metadata.customerName,
+    serviceName: session.service_name || payment.service_name || metadata.serviceName,
+    sessionDate,
+    sessionTime,
+    status: status || session.status || 'scheduled',
+    paymentStatus: payment.status,
+    paymentId: payment.id,
+    sessionId: session.id,
+    amount: payment.amount || session.amount,
+    reason,
+    comment: comment || session.comment || payment.comment || metadata.comment
+  };
+}
+
+function sendVkBookingNotification(type, data = {}) {
+  vkNotifier.sendEvent(buildBookingNotificationEvent(type, data)).catch(error => {
+    logger.error(`VK notification error: ${error.message}`);
+  });
 }
 
 async function sendEmailConfirmation({ email, name, amount, serviceName, sessionDate, sessionTime, paymentId }) {
@@ -363,6 +558,51 @@ async function sendEmailConfirmation({ email, name, amount, serviceName, session
 // ——————————————————————————————
 // API: СОЗДАТЬ ПЛАТЁЖ
 // ——————————————————————————————
+app.post('/api/reviews',
+  strictLimiter,
+  [
+    body('rating').isInt({ min: 1, max: 5 }),
+    body('name').isString().trim().isLength({ min: 2, max: 120 }),
+    body('contact').isString().trim().isLength({ min: 3, max: 160 }),
+    body('message').isString().trim().isLength({ min: 10, max: 2000 }),
+    handleValidationErrors
+  ],
+  async (req, res) => {
+    try {
+      const rating = Number(req.body.rating);
+      const name = sanitizeInput(req.body.name);
+      const contact = sanitizeInput(req.body.contact);
+      const message = sanitizeInput(req.body.message);
+
+      const review = await reviewsDb.createReview({
+        rating,
+        name,
+        contact,
+        message,
+        source: 'site'
+      });
+
+      await sendTelegramNotification([
+        'Новый отзыв с сайта',
+        `ID: ${review.id}`,
+        `Оценка: ${rating}/5`,
+        `Имя: ${name}`,
+        `Контакт: ${contact}`,
+        `Отзыв: ${message}`
+      ].join('\n'));
+
+      logger.info(`Review created: #${review.id}, rating: ${rating}, contact: ${contact}`);
+      res.status(201).json({ success: true, id: review.id });
+    } catch (error) {
+      logger.error(`Review error: ${error.message}`);
+      res.status(500).json({
+        success: false,
+        error: 'Не удалось отправить отзыв'
+      });
+    }
+  }
+);
+
 app.post('/api/create-payment',
   strictLimiter,
   [
@@ -372,6 +612,7 @@ app.post('/api/create-payment',
     body('customerEmail').optional({ values: 'falsy' }).isEmail().normalizeEmail(),
     body('customerName').optional().isString().trim().isLength({ min: 2, max: 200 }),
     body('customerPhone').optional().isString().trim().isLength({ min: 5, max: 20 }),
+    body('serviceId').optional().isString().trim().isLength({ min: 2, max: 50 }),
     body('serviceName').optional().isString().trim().isLength({ min: 2, max: 100 }),
     body('sessionDate').optional().isString().trim().isLength({ min: 8, max: 20 }),
     body('sessionTime').optional().isString().trim().isLength({ min: 4, max: 10 }),
@@ -388,6 +629,7 @@ app.post('/api/create-payment',
         customerEmail,
         customerName,
         customerPhone,
+        serviceId,
         serviceName,
         sessionDate,
         sessionTime,
@@ -403,6 +645,7 @@ app.post('/api/create-payment',
         orderId: orderNumber,
         statusToken,
         cancelToken,
+        serviceId: serviceId || '',
         customerEmail: customerEmail || '',
         customerName: customerName || '',
         customerPhone: customerPhone || '',
@@ -417,24 +660,38 @@ app.post('/api/create-payment',
 
       // Сохраняем платёж в БД
       if (sessionDatetime) {
-        const busySession = await db.getBusySessionByDatetime(sessionDatetime);
-        if (busySession) {
+        const duplicateBooking = await getDuplicateGroupBooking({
+          serviceId,
+          serviceName,
+          sessionDate,
+          sessionTime,
+          customerEmail,
+          customerPhone
+        });
+
+        if (duplicateBooking) {
           return res.status(409).json({
             success: false,
-            error: 'Выбранное время уже занято. Пожалуйста, выберите другой слот.'
+            error: 'Вы уже записаны или бронируете место на этот групповой тренинг. Одному участнику доступно одно место.',
+            code: 'duplicate_group_booking'
           });
         }
 
-        const reservedPayments = await db.getPaymentsByStatuses(['pending', 'succeeded', 'waiting_for_capture'], 500);
-        const blockingPayment = reservedPayments.find(item => {
-          const reserved = getReservedSlotMetadata(item);
-          return reserved && reserved.sessionDatetime === sessionDatetime;
+        const availability = await getSlotAvailability({
+          serviceId,
+          serviceName,
+          sessionDate,
+          sessionTime
         });
 
-        if (blockingPayment) {
+        if (!availability.available) {
+          const isGroupFull = availability.code === 'group_full';
           return res.status(409).json({
             success: false,
-            error: 'Это время уже забронировано другим клиентом. Пожалуйста, выберите другой слот.'
+            error: isGroupFull
+              ? 'На этот групповой тренинг мест больше нет. Пожалуйста, выберите другой слот.'
+              : 'Выбранное время уже занято. Пожалуйста, выберите другой слот.',
+            code: availability.code
           });
         }
       }
@@ -450,6 +707,7 @@ app.post('/api/create-payment',
         customer_email: customerEmail || null,
         customer_phone: customerPhone || null,
         customer_name: customerName || null,
+        service_id: serviceId || null,
         service_name: serviceName || null,
         comment: comment || null,
         metadata: paymentMetadata
@@ -458,6 +716,21 @@ app.post('/api/create-payment',
       // MOCK режим
       if (MOCK_MODE) {
         await db.updatePaymentStatus(paymentId, 'succeeded', new Date().toISOString());
+        await sendVkBookingNotification('payment_succeeded', {
+          payment: {
+            id: paymentId,
+            amount,
+            status: 'succeeded',
+            customer_name: customerName,
+            customer_phone: customerPhone,
+            customer_email: customerEmail,
+            service_name: serviceName,
+            service_id: serviceId,
+            comment,
+            metadata: paymentMetadata
+          },
+          status: 'pending_confirmation'
+        });
 
         const mockConfirmationUrl = `${SITE_URL}/payment-check.html?mock=true&amount=${amount}&payment_id=${paymentId}&token=${statusToken}`;
 
@@ -691,6 +964,14 @@ app.post('/api/webhook', async (req, res) => {
       }
 
       await db.updatePaymentStatus(existingPayment.id, 'succeeded', object.paid_at);
+      await sendVkBookingNotification('payment_succeeded', {
+        payment: {
+          ...existingPayment,
+          status: 'succeeded',
+          amount: existingPayment.amount || object.amount?.value
+        },
+        status: 'pending_confirmation'
+      });
 
       await sendTelegramNotification(
         `✅ <b>Оплата получена!</b>\n\n` +
@@ -711,6 +992,15 @@ app.post('/api/webhook', async (req, res) => {
       }
 
       await db.updatePaymentStatus(existingPayment.id, object.status);
+      await sendVkBookingNotification('payment_canceled', {
+        payment: {
+          ...existingPayment,
+          status: object.status,
+          amount: existingPayment.amount || object.amount?.value
+        },
+        status: object.status,
+        reason: object.cancellation_details?.reason || ''
+      });
       const cleanupResult = await discardPaymentIfUnused(existingPayment.id);
       if (cleanupResult.discarded) {
         logger.info(`🧹 Удалён неиспользованный платёж после ${object.status}: ${existingPayment.id}`);
@@ -739,17 +1029,21 @@ app.get('/api/sessions',
   rateLimit({ windowMs: 60000, max: 30 }),
   async (req, res) => {
     try {
-      const { limit = 50, past = 'false', page = 1 } = req.query;
+      const { limit = 50, past = 'false', page = 1, from = '', to = '', status = '' } = req.query;
       const isPast = past === 'true';
       const safeLimit = Math.min(parseInt(limit) || 50, 200);
       const safePage = Math.max(parseInt(page) || 1, 1);
       const offset = (safePage - 1) * safeLimit;
+      const filters = {
+        past: from || to ? null : isPast,
+        from: String(from || '').slice(0, 40),
+        to: String(to || '').slice(0, 40),
+        status: ['scheduled', 'completed', 'cancelled'].includes(status) ? status : ''
+      };
 
       const [sessions, total] = await Promise.all([
-        isPast
-          ? db.getPastSessions(safeLimit, offset)
-          : db.getAllSessions(safeLimit, offset),
-        db.countSessions({ past: isPast })
+        db.getSessionsByRange(filters, safeLimit, offset),
+        db.countSessionsByRange(filters)
       ]);
 
       res.json({
@@ -824,6 +1118,11 @@ app.delete('/api/sessions/:id',
 
       // Отменяем сеанс
       await db.updateSessionStatus(sessionId, 'cancelled');
+      await sendVkBookingNotification('booking_cancelled', {
+        payment: session.payment_id ? await db.getPayment(session.payment_id) : {},
+        session: { ...session, status: 'cancelled' },
+        status: 'cancelled'
+      });
 
       // Также отменяем связанный платёж (если есть и в MOCK режиме)
       if (MOCK_MODE && session.payment_id) {
@@ -933,6 +1232,7 @@ app.post('/api/payments/:id/confirm-booking',
     body('customerEmail').optional({ values: 'falsy' }).isEmail().normalizeEmail(),
     body('customerName').optional().isString().trim().isLength({ min: 2, max: 200 }),
     body('customerPhone').optional().isString().trim().isLength({ min: 5, max: 20 }),
+    body('serviceId').optional().isString().trim().isLength({ min: 2, max: 50 }),
     body('serviceName').optional().isString().trim().isLength({ min: 2, max: 100 }),
     body('sessionDate').optional().isString().trim().isLength({ min: 8, max: 20 }),
     body('sessionTime').optional().isString().trim().isLength({ min: 4, max: 10 }),
@@ -954,6 +1254,7 @@ app.post('/api/payments/:id/confirm-booking',
         customerEmail,
         customerName,
         customerPhone,
+        serviceId,
         serviceName,
         sessionDate,
         sessionTime,
@@ -984,17 +1285,48 @@ app.post('/api/payments/:id/confirm-booking',
         });
       }
 
-      const busySession = await db.getBusySessionByDatetime(sessionDatetime);
-      if (busySession) {
+      const storedMetadata = getStoredPaymentMetadata(payment);
+      const resolvedServiceId = serviceId || storedMetadata.serviceId || payment.service_id || '';
+      const duplicateBooking = await getDuplicateGroupBooking({
+        serviceId: resolvedServiceId,
+        serviceName,
+        sessionDate,
+        sessionTime,
+        customerEmail,
+        customerPhone,
+        excludePaymentId: id
+      });
+
+      if (duplicateBooking) {
         return res.status(409).json({
           success: false,
-          error: 'Выбранное время уже занято. Пожалуйста, выберите другой слот.',
-          code: 'slot_taken'
+          error: 'Вы уже записаны на этот групповой тренинг. Одному участнику доступно одно место.',
+          code: 'duplicate_group_booking'
+        });
+      }
+
+      const availability = await getSlotAvailability({
+        serviceId: resolvedServiceId,
+        serviceName,
+        sessionDate,
+        sessionTime,
+        excludePaymentId: id
+      });
+
+      if (!availability.available) {
+        const isGroupFull = availability.code === 'group_full';
+        return res.status(409).json({
+          success: false,
+          error: isGroupFull
+            ? 'На этот групповой тренинг мест больше нет. Напишите нам, чтобы мы помогли с переносом или возвратом.'
+            : 'Выбранное время уже занято. Пожалуйста, выберите другой слот.',
+          code: availability.code
         });
       }
 
       const metadata = {
-        ...getStoredPaymentMetadata(payment),
+        ...storedMetadata,
+        serviceId: resolvedServiceId,
         customerEmail: customerEmail || '',
         customerName,
         customerPhone,
@@ -1005,11 +1337,13 @@ app.post('/api/payments/:id/confirm-booking',
         comment: comment || ''
       };
 
-      const createdSession = await db.createSession({
+      const serviceForGuard = getServiceConfig(resolvedServiceId, serviceName);
+      const createdSession = await createSessionWithSlotGuard(db, {
         payment_id: id,
         client_name: customerName,
         client_phone: customerPhone,
         client_email: customerEmail || null,
+        service_id: resolvedServiceId || null,
         service_name: serviceName,
         session_date: sessionDate,
         session_time: sessionTime,
@@ -1017,15 +1351,18 @@ app.post('/api/payments/:id/confirm-booking',
         amount: payment.amount,
         comment: comment || null,
         status: 'scheduled'
-      });
-
-      await db.updatePaymentBookingDetails(id, {
-        customer_email: customerEmail || null,
-        customer_phone: customerPhone,
-        customer_name: customerName,
-        service_name: serviceName,
-        comment: comment || null,
-        metadata
+      }, {
+        serviceType: serviceForGuard.type,
+        capacity: serviceForGuard.capacity,
+        paymentUpdate: {
+          customer_email: customerEmail || null,
+          customer_phone: customerPhone,
+          customer_name: customerName,
+          service_id: resolvedServiceId || null,
+          service_name: serviceName,
+          comment: comment || null,
+          metadata
+        }
       });
 
       if (customerEmail) {
@@ -1041,8 +1378,37 @@ app.post('/api/payments/:id/confirm-booking',
       }
 
       logger.info(`✅ Запись подтверждена после оплаты: ${sessionDatetime} (${id})`);
+      await sendVkBookingNotification('booking_created', {
+        payment: { ...payment, metadata },
+        session: {
+          ...createdSession,
+          client_name: customerName,
+          client_phone: customerPhone,
+          client_email: customerEmail || null,
+          service_id: resolvedServiceId || null,
+          service_name: serviceName,
+          session_date: sessionDate,
+          session_time: sessionTime,
+          session_datetime: sessionDatetime,
+          amount: payment.amount,
+          comment: comment || null,
+          status: 'scheduled'
+        },
+        status: 'scheduled'
+      });
+
       res.json({ success: true, sessionId: createdSession.id });
     } catch (error) {
+      if (['SLOT_FULL', 'SLOT_TAKEN', 'DUPLICATE_GROUP_BOOKING', 'SQLITE_CONSTRAINT'].includes(error.code)) {
+        const isDuplicate = error.code === 'DUPLICATE_GROUP_BOOKING';
+        return res.status(409).json({
+          success: false,
+          error: isDuplicate
+            ? '?? ??? ???????? ?? ???? ????????? ???????.'
+            : '????????? ????? ??? ??????. ??????????, ???????? ?????? ????.',
+          code: error.code
+        });
+      }
       logger.error(`❌ Ошибка подтверждения записи: ${error.message}`);
       res.status(500).json({
         success: false,
@@ -1077,6 +1443,11 @@ app.patch('/api/sessions/:id/status',
       }
 
       await db.updateSessionStatus(sessionId, status);
+      await sendVkBookingNotification('booking_status_changed', {
+        payment: session.payment_id ? await db.getPayment(session.payment_id) : {},
+        session: { ...session, status },
+        status
+      });
       logger.info(`🛠️ Статус сеанса #${sessionId} обновлён: ${session.status} -> ${status}`);
 
       res.json({ success: true, message: 'Статус обновлён', sessionId, status });
@@ -1115,7 +1486,7 @@ app.post('/api/cancel-booking',
 
       // Находим сеанс по payment_id
       const sessions = await new Promise((resolve, reject) => {
-        db.db.all('SELECT id, status FROM sessions WHERE payment_id = ?', [paymentId], (err, rows) => {
+        db.db.all('SELECT * FROM sessions WHERE payment_id = ?', [paymentId], (err, rows) => {
           if (err) reject(err);
           else resolve(rows);
         });
@@ -1133,6 +1504,12 @@ app.post('/api/cancel-booking',
           });
         }
         await db.updateSessionStatus(session.id, 'cancelled');
+        await sendVkBookingNotification('booking_cancelled', {
+          payment: { ...payment, status: MOCK_MODE ? 'canceled' : payment.status },
+          session: { ...session, status: 'cancelled' },
+          status: 'cancelled',
+          reason: sanitizeInput(reason || '')
+        });
       }
 
       // Отменяем платёж в MOCK режиме
@@ -1203,38 +1580,18 @@ app.get('/api/services', (req, res) => {
 // ——————————————————————————————
 app.get('/api/schedule', async (req, res) => {
   try {
-    const { days } = req.query;
+    const { days, service: serviceQuery, serviceId: serviceIdQuery } = req.query;
     const safeDays = Math.min(parseInt(days) || config.schedule.daysAhead, 90);
 
+    const service = getServiceConfig(serviceIdQuery || serviceQuery || 'consult');
     const allTimes = config.schedule.timeSlots;
-
-    // Получаем занятые слоты из БД
-    const sessions = await db.getAllSessions(500);
-    const busyMap = {};
-    for (const s of sessions) {
-      if (s.status === 'scheduled' || s.status === 'completed') {
-        const dateStr = s.session_date;
-        if (!busyMap[dateStr]) busyMap[dateStr] = [];
-        busyMap[dateStr].push(s.session_time);
-      }
-    }
-
-    const reservedPayments = await db.getPaymentsByStatuses(['pending', 'succeeded', 'waiting_for_capture'], 500);
-    for (const payment of reservedPayments) {
-      const reserved = getReservedSlotMetadata(payment);
-      if (!reserved) continue;
-
-      const paymentSessions = await db.getSessionsByPaymentId(payment.id);
-      if (paymentSessions.length > 0) continue;
-
-      if (!busyMap[reserved.sessionDate]) busyMap[reserved.sessionDate] = [];
-      if (!busyMap[reserved.sessionDate].includes(reserved.sessionTime)) {
-        busyMap[reserved.sessionDate].push(reserved.sessionTime);
-      }
-    }
+    const usageMap = await buildSlotUsageMap();
 
     // Генерируем свободные слоты
+    const allSlots = {};
     const freeSlots = {};
+    const busyMap = {};
+    const slotDetails = {};
     const now = new Date();
     for (let i = 1; i <= safeDays; i++) {
       const d = new Date(now);
@@ -1243,15 +1600,46 @@ app.get('/api/schedule', async (req, res) => {
       if (config.schedule.excludeWeekends && (dow === 0 || dow === 6)) continue;
 
       const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-      const busy = busyMap[key] || [];
-      const available = allTimes.filter(t => !busy.includes(t));
+      const available = [];
+      allSlots[key] = allTimes;
 
-      if (available.length > 0) {
-        freeSlots[key] = available;
+      for (const time of allTimes) {
+        const entries = usageMap[`${key}|${time}`] || [];
+        const state = getSlotStateFromEntries(service, entries);
+
+        if (state.available) {
+          available.push(time);
+        } else {
+          if (!busyMap[key]) busyMap[key] = [];
+          busyMap[key].push(time);
+        }
+
+        if (service.type === 'group') {
+          if (!slotDetails[key]) slotDetails[key] = {};
+          slotDetails[key][time] = {
+            occupied: state.occupied,
+            capacity: state.capacity,
+            remaining: state.remaining,
+            available: state.available
+          };
+        }
       }
+
+      if (available.length > 0) freeSlots[key] = available;
     }
 
-    res.json({ success: true, freeSlots, busySlots: busyMap });
+    res.json({
+      success: true,
+      service: {
+        id: service.id,
+        type: service.type,
+        capacity: service.capacity
+      },
+      allSlots,
+      freeSlots,
+      busySlots: busyMap,
+      slotDetails
+    });
   } catch (error) {
     logger.error(`❌ Ошибка получения расписания:`, error.message);
     res.status(500).json({ success: false, error: error.message });
@@ -1286,7 +1674,9 @@ if (!fs.existsSync(dataDir)) {
   fs.mkdirSync(dataDir);
 }
 
-const server = app.listen(PORT, () => {
+let server;
+function startServer() {
+  server = app.listen(PORT, () => {
   logger.info(`
 ╔═══════════════════════════════════════════════════════════╗
 ║   🚀 Сервер запущен + База данных                         ║
@@ -1305,7 +1695,16 @@ const server = app.listen(PORT, () => {
 ║   GET  /api/health                                        ║
 ╚═══════════════════════════════════════════════════════════╝
   `);
-});
+  });
+  return server;
+}
+
+if (require.main === module) {
+  db.ready.then(startServer).catch((error) => {
+    logger.error(`Database is not ready: ${error.message}`);
+    process.exit(1);
+  });
+}
 
 process.on('SIGTERM', () => {
   logger.info('📡 SIGTERM получен. Завершаем работу...');
@@ -1325,4 +1724,5 @@ process.on('SIGINT', () => {
   });
 });
 
+app.startServer = startServer;
 module.exports = app;
