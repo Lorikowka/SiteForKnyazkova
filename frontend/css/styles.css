@@ -922,7 +922,7 @@ footer {
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.25s ease;
-  z-index: 150;
+  z-index: 50;
 }
 
 .nav-overlay.open {

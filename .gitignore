@@ -8,3 +8,4 @@ telegram-bot/__pycache__/
 vk-bot/__pycache__/
 telegram-bot/venv/
 vk-bot/venv/
+vk-bot/subscribers.txt

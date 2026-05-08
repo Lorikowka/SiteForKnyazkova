@@ -10,6 +10,7 @@
 // ——————————————————————————————
 const path = require('path');
 const fs = require('fs');
+const { spawn } = require('child_process');
 const dotenv = require('dotenv');
 
 const NODE_ENV = process.env.NODE_ENV || 'development';
@@ -41,6 +42,10 @@ const { escapeHtml, sanitizeInput, withRetry } = db;
 const app = express();
 const PORT = process.env.PORT || 1488;
 const FRONTEND_PATH = path.join(__dirname, '..', 'frontend');
+const VK_TEST_BOT_ENABLED = process.env.START_VK_TEST_BOT === 'true';
+const VK_TEST_BOT_PATH = path.join(__dirname, '..', 'vk-bot', 'testbot.py');
+const VK_TEST_BOT_CWD = path.dirname(VK_TEST_BOT_PATH);
+const PYTHON_COMMAND = process.env.PYTHON_COMMAND || 'python';
 
 // Загружаем конфигурацию услуг
 const config = require('./config.json');
@@ -325,6 +330,14 @@ function getServiceConfig(serviceId, serviceName = '') {
     type: service?.type || 'individual',
     capacity: Math.max(1, Number(service?.capacity) || 1)
   };
+}
+
+function isValidIsoDate(value) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(String(value || ''));
+}
+
+function isValidTimeSlot(value) {
+  return /^\d{2}:\d{2}$/.test(String(value || ''));
 }
 
 function getRowServiceConfig(row) {
@@ -1098,6 +1111,109 @@ app.get('/api/payments',
   }
 );
 
+app.post('/api/sessions',
+  requireApiKey,
+  rateLimit({ windowMs: 60000, max: 30 }),
+  [
+    body('clientName').isString().trim().isLength({ min: 2, max: 200 }),
+    body('clientPhone').isString().trim().isLength({ min: 5, max: 20 }),
+    body('clientEmail').optional({ values: 'falsy' }).isEmail().normalizeEmail(),
+    body('serviceId').optional().isString().trim().isLength({ min: 2, max: 50 }),
+    body('serviceName').optional().isString().trim().isLength({ min: 2, max: 100 }),
+    body('sessionDate').isString().trim().isLength({ min: 10, max: 10 }),
+    body('sessionTime').isString().trim().isLength({ min: 5, max: 5 }),
+    body('comment').optional().isString().isLength({ max: 500 }),
+    handleValidationErrors
+  ],
+  async (req, res) => {
+    try {
+      const {
+        clientName,
+        clientPhone,
+        clientEmail = '',
+        serviceId = 'consult',
+        serviceName = '',
+        sessionDate,
+        sessionTime,
+        comment = ''
+      } = req.body;
+
+      if (!isValidIsoDate(sessionDate) || !isValidTimeSlot(sessionTime)) {
+        return res.status(400).json({ success: false, error: 'Некорректные дата или время' });
+      }
+
+      const blocked = await db.getUnavailableDays(sessionDate, sessionDate);
+      if (blocked.length > 0) {
+        return res.status(409).json({ success: false, error: 'Этот день отмечен как нерабочий', code: 'day_unavailable' });
+      }
+
+      const service = getServiceConfig(serviceId, serviceName);
+      const resolvedServiceId = service.id || serviceId || 'consult';
+      const resolvedServiceName = serviceName || service.name;
+      const sessionDatetime = `${sessionDate}T${sessionTime}:00`;
+      const availability = await getSlotAvailability({
+        serviceId: resolvedServiceId,
+        serviceName: resolvedServiceName,
+        sessionDate,
+        sessionTime
+      });
+
+      if (!availability.available) {
+        return res.status(409).json({
+          success: false,
+          error: availability.code === 'group_full'
+            ? 'На это время больше нет мест'
+            : 'Это время уже занято',
+          code: availability.code
+        });
+      }
+
+      const createdSession = await createSessionWithSlotGuard(db, {
+        payment_id: null,
+        client_name: sanitizeInput(clientName),
+        client_phone: sanitizeInput(clientPhone),
+        client_email: clientEmail || null,
+        service_id: resolvedServiceId,
+        service_name: resolvedServiceName,
+        session_date: sessionDate,
+        session_time: sessionTime,
+        session_datetime: sessionDatetime,
+        amount: Number(service.price) || 0,
+        comment: sanitizeInput(comment || ''),
+        status: 'scheduled'
+      }, {
+        serviceType: service.type,
+        capacity: service.capacity
+      });
+
+      const session = {
+        ...createdSession,
+        client_name: sanitizeInput(clientName),
+        client_phone: sanitizeInput(clientPhone),
+        client_email: clientEmail || null,
+        service_id: resolvedServiceId,
+        service_name: resolvedServiceName,
+        session_date: sessionDate,
+        session_time: sessionTime,
+        session_datetime: sessionDatetime,
+        amount: Number(service.price) || 0,
+        comment: sanitizeInput(comment || ''),
+        status: 'scheduled'
+      };
+
+      await sendVkBookingNotification('booking_created', { payment: {}, session, status: 'scheduled' });
+      logger.info(`✅ Запись создана админом через API: ${sessionDatetime}`);
+      res.json({ success: true, sessionId: createdSession.id, session });
+    } catch (error) {
+      if (['SLOT_FULL', 'SLOT_TAKEN', 'DUPLICATE_GROUP_BOOKING', 'SQLITE_CONSTRAINT'].includes(error.code)) {
+        return res.status(409).json({ success: false, error: 'Выбранный слот уже недоступен', code: error.code });
+      }
+      logger.error(`❌ Ошибка создания записи админом: ${error.message}`);
+      res.status(500).json({ success: false, error: error.message });
+    }
+  }
+);
+
 // ——————————————————————————————
 // API: УДАЛИТЬ СЕАНС (для бота)
 // ——————————————————————————————
@@ -1116,13 +1232,14 @@ app.delete('/api/sessions/:id',
         return res.status(404).json({ success: false, error: 'Сеанс не найден' });
       }
 
-      // Отменяем сеанс
-      await db.updateSessionStatus(sessionId, 'cancelled');
+      // Уведомляем об отмене до физического удаления, пока данные записи доступны.
       await sendVkBookingNotification('booking_cancelled', {
         payment: session.payment_id ? await db.getPayment(session.payment_id) : {},
         session: { ...session, status: 'cancelled' },
         status: 'cancelled'
       });
+
+      await db.deleteSession(sessionId);
 
       // Также отменяем связанный платёж (если есть и в MOCK режиме)
       if (MOCK_MODE && session.payment_id) {
@@ -1130,7 +1247,7 @@ app.delete('/api/sessions/:id',
       }
 
       logger.info(`❌ Сеанс #${sessionId} удалён через API`);
-      res.json({ success: true, message: 'Сеанс отменён' });
+      res.json({ success: true, message: 'Сеанс удалён из базы данных' });
     } catch (error) {
       logger.error(`❌ Ошибка удаления сеанса:`, error.message);
       res.status(500).json({ success: false, error: error.message });
@@ -1575,6 +1692,68 @@ app.get('/api/services', (req, res) => {
   res.json({ success: true, services: config.services, schedule: config.schedule });
 });
 
+app.get('/api/admin/unavailable-days',
+  requireApiKey,
+  rateLimit({ windowMs: 60000, max: 30 }),
+  async (req, res) => {
+    try {
+      const from = isValidIsoDate(req.query.from) ? String(req.query.from) : '';
+      const to = isValidIsoDate(req.query.to) ? String(req.query.to) : '';
+      const days = await db.getUnavailableDays(from, to);
+      res.json({ success: true, days });
+    } catch (error) {
+      logger.error(`❌ Ошибка получения нерабочих дней: ${error.message}`);
+      res.status(500).json({ success: false, error: error.message });
+    }
+  }
+);
+
+app.post('/api/admin/unavailable-days',
+  requireApiKey,
+  rateLimit({ windowMs: 60000, max: 30 }),
+  [
+    body('date').isString().trim().isLength({ min: 10, max: 10 }),
+    body('reason').optional().isString().isLength({ max: 200 }),
+    handleValidationErrors
+  ],
+  async (req, res) => {
+    try {
+      const date = String(req.body.date || '').trim();
+      const reason = sanitizeInput(req.body.reason || 'Нерабочий день');
+      if (!isValidIsoDate(date)) {
+        return res.status(400).json({ success: false, error: 'Некорректная дата' });
+      }
+
+      const result = await db.setUnavailableDay(date, reason);
+      logger.info(`📅 Нерабочий день установлен: ${date}`);
+      res.json({ success: true, day: result });
+    } catch (error) {
+      logger.error(`❌ Ошибка добавления нерабочего дня: ${error.message}`);
+      res.status(500).json({ success: false, error: error.message });
+    }
+  }
+);
+
+app.delete('/api/admin/unavailable-days/:date',
+  requireApiKey,
+  rateLimit({ windowMs: 60000, max: 30 }),
+  async (req, res) => {
+    try {
+      const date = String(req.params.date || '').trim();
+      if (!isValidIsoDate(date)) {
+        return res.status(400).json({ success: false, error: 'Некорректная дата' });
+      }
+
+      const result = await db.deleteUnavailableDay(date);
+      logger.info(`📅 Нерабочий день снят: ${date}`);
+      res.json({ success: true, deleted: result.changes, date });
+    } catch (error) {
+      logger.error(`❌ Ошибка снятия нерабочего дня: ${error.message}`);
+      res.status(500).json({ success: false, error: error.message });
+    }
+  }
+);
+
 // ——————————————————————————————
 // API: РАСПИСАНИЕ (доступные слоты для фронтенда)
 // ——————————————————————————————
@@ -1593,13 +1772,19 @@ app.get('/api/schedule', async (req, res) => {
     const busyMap = {};
     const slotDetails = {};
     const now = new Date();
+    const fromDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    const endDate = new Date(now);
+    endDate.setDate(now.getDate() + safeDays);
+    const toDate = `${endDate.getFullYear()}-${String(endDate.getMonth() + 1).padStart(2, '0')}-${String(endDate.getDate()).padStart(2, '0')}`;
+    const unavailableDays = new Set((await db.getUnavailableDays(fromDate, toDate)).map(day => day.date));
+
     for (let i = 1; i <= safeDays; i++) {
       const d = new Date(now);
       d.setDate(now.getDate() + i);
       const dow = d.getDay();
-      if (config.schedule.excludeWeekends && (dow === 0 || dow === 6)) continue;
-
       const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      if (config.schedule.excludeWeekends && (dow === 0 || dow === 6)) continue;
+      if (unavailableDays.has(key)) continue;
       const available = [];
       allSlots[key] = allTimes;
 
@@ -1675,6 +1860,55 @@ if (!fs.existsSync(dataDir)) {
 }
 
 let server;
+let vkTestBotProcess = null;
+
+function firstApiKey(value) {
+  return String(value || '').split(',').map(key => key.trim()).filter(Boolean)[0] || '';
+}
+
+function startVkTestBot() {
+  if (!VK_TEST_BOT_ENABLED) return;
+
+  if (!fs.existsSync(VK_TEST_BOT_PATH)) {
+    logger.warn(`VK test bot file not found: ${VK_TEST_BOT_PATH}`);
+    return;
+  }
+
+  if (vkTestBotProcess) return;
+
+  const backendUrl = process.env.BACKEND_URL || `http://localhost:${PORT}`;
+  const botApiKey = process.env.BOT_API_KEY || firstApiKey(BOT_API_KEYS) || API_KEY;
+
+  vkTestBotProcess = spawn(PYTHON_COMMAND, [VK_TEST_BOT_PATH], {
+    cwd: VK_TEST_BOT_CWD,
+    stdio: 'inherit',
+    env: {
+      ...process.env,
+      BACKEND_URL: backendUrl,
+      BOT_API_KEY: botApiKey
+    },
+    windowsHide: true
+  });
+
+  logger.info(`VK test bot started with PID ${vkTestBotProcess.pid}`);
+
+  vkTestBotProcess.on('exit', (code, signal) => {
+    logger.info(`VK test bot stopped: code=${code ?? 'none'} signal=${signal ?? 'none'}`);
+    vkTestBotProcess = null;
+  });
+
+  vkTestBotProcess.on('error', (error) => {
+    logger.error(`VK test bot start error: ${error.message}`);
+    vkTestBotProcess = null;
+  });
+}
+
+function stopVkTestBot() {
+  if (!vkTestBotProcess) return;
+  vkTestBotProcess.kill();
+  vkTestBotProcess = null;
+}
+
 function startServer() {
   server = app.listen(PORT, () => {
   logger.info(`
@@ -1695,6 +1929,7 @@ function startServer() {
 ║   GET  /api/health                                        ║
 ╚═══════════════════════════════════════════════════════════╝
   `);
+    startVkTestBot();
   });
   return server;
 }
@@ -1708,6 +1943,7 @@ if (require.main === module) {
 
 process.on('SIGTERM', () => {
   logger.info('📡 SIGTERM получен. Завершаем работу...');
+  stopVkTestBot();
   server.close(() => {
     db.db.close();
     logger.info('✅ Сервер остановлен');
@@ -1717,6 +1953,7 @@ process.on('SIGTERM', () => {
 
 process.on('SIGINT', () => {
   logger.info('📡 SIGINT получен. Завершаем работу...');
+  stopVkTestBot();
   server.close(() => {
     db.db.close();
     logger.info('✅ Сервер остановлен');

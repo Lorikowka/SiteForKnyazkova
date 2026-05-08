@@ -108,6 +108,14 @@ db.serialize(() => {
     )
   `);
 
+  db.run(`
+    CREATE TABLE IF NOT EXISTS unavailable_days (
+      date TEXT PRIMARY KEY,
+      reason TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
   // Индексы для ускорения поиска
   db.run(`CREATE INDEX IF NOT EXISTS idx_sessions_date ON sessions(session_date)`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status)`);
@@ -614,6 +622,40 @@ function getBusySessionByDatetime(sessionDatetime) {
   });
 }
 
+function getUnavailableDays(from = '', to = '') {
+  return new Promise((resolve, reject) => {
+    const where = [];
+    const params = [];
+    if (from) { where.push('date >= ?'); params.push(from); }
+    if (to) { where.push('date <= ?'); params.push(to); }
+    const sql = 'SELECT * FROM unavailable_days ' + (where.length ? 'WHERE ' + where.join(' AND ') : '') + ' ORDER BY date ASC';
+    db.all(sql, params, (err, rows) => {
+      if (err) reject(err);
+      else resolve(rows);
+    });
+  });
+}
+
+function setUnavailableDay(date, reason = '') {
+  return new Promise((resolve, reject) => {
+    const sql = `INSERT OR REPLACE INTO unavailable_days (date, reason) VALUES (?, ?)`;
+    db.run(sql, [date, reason || null], function(err) {
+      if (err) reject(err);
+      else resolve({ date, reason: reason || null, changes: this.changes });
+    });
+  });
+}
+
+function deleteUnavailableDay(date) {
+  return new Promise((resolve, reject) => {
+    const sql = `DELETE FROM unavailable_days WHERE date = ?`;
+    db.run(sql, [date], function(err) {
+      if (err) reject(err);
+      else resolve({ date, changes: this.changes });
+    });
+  });
+}
+
 // ═══════════════════════════════════════════════════════════
 // ФУНКЦИИ ДЛЯ НАСТРОЕК
 // ═══════════════════════════════════════════════════════════
@@ -712,6 +754,9 @@ module.exports = {
   getSession,
   getSessionsByPaymentId,
   getBusySessionByDatetime,
+  getUnavailableDays,
+  setUnavailableDay,
+  deleteUnavailableDay,
   // Настройки
   setSetting,
   getSetting

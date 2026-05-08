@@ -68,6 +68,18 @@ const migrations = [
           AND client_email <> ''
       `);
     }
+  },
+  {
+    id: '003_unavailable_days',
+    up: async db => {
+      await run(db, `
+        CREATE TABLE IF NOT EXISTS unavailable_days (
+          date TEXT PRIMARY KEY,
+          reason TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+    }
   }
 ];
 
