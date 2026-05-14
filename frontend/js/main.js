@@ -158,7 +158,7 @@ function renderLightboxImg() {
   if (!lbCanvasWrap || !lbTitle) return;
 
   const diploma = DIPLOMAS[lbCurrentIndex];
-  lbTitle.textContent = diploma.title;
+  lbTitle.textContent = '';
   lbCanvasWrap.innerHTML = '';
 
   lbImg = document.createElement('img');
@@ -218,12 +218,7 @@ function renderDiplomaPreviews() {
     img.className = 'diploma-canvas';
     imgWrap.appendChild(img);
 
-    const caption = document.createElement('p');
-    caption.className = 'diploma-caption';
-    caption.textContent = diploma.title;
-
     item.appendChild(imgWrap);
-    item.appendChild(caption);
     item.addEventListener('click', () => openLightbox(index));
     diplomaScrollEl.appendChild(item);
   });
@@ -242,13 +237,13 @@ if (diplomaScrollEl) {
 
 if (diplomaPrevBtn) {
   diplomaPrevBtn.addEventListener('click', () => {
-    diplomaScrollEl.scrollBy({ left: -320, behavior: 'smooth' });
+    diplomaScrollEl.scrollBy({ left: -160, behavior: 'smooth' });
   });
 }
 
 if (diplomaNextBtn) {
   diplomaNextBtn.addEventListener('click', () => {
-    diplomaScrollEl.scrollBy({ left: 320, behavior: 'smooth' });
+    diplomaScrollEl.scrollBy({ left: 160, behavior: 'smooth' });
   });
 }
 

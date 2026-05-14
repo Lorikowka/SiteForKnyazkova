@@ -196,17 +196,17 @@ nav a.active { color: var(--green-mid); font-weight: 500; }
 
 .diplomas-scroll-wrap {
   position: relative;
-  margin-top: 48px;
+  margin-top: 22px;
 }
 
 .diplomas-scroll {
   display: flex;
-  gap: clamp(16px, 2vw, 24px);
+  gap: clamp(8px, 1.2vw, 12px);
   overflow-x: auto;
   scroll-snap-type: x mandatory;
   -webkit-overflow-scrolling: touch;
   scrollbar-width: none;
-  padding-bottom: 8px;
+  padding: 2px 0 8px;
 }
 
 .diplomas-scroll::-webkit-scrollbar { display: none; }
@@ -215,13 +215,13 @@ nav a.active { color: var(--green-mid); font-weight: 500; }
   position: absolute;
   top: 50%;
   transform: translateY(-50%);
-  width: 44px;
-  height: 44px;
+  width: 34px;
+  height: 34px;
   border-radius: 50%;
   background: var(--white);
   border: 2px solid var(--green-border);
   color: var(--green-mid);
-  font-size: 26px;
+  font-size: 22px;
   line-height: 1;
   cursor: pointer;
   display: flex;
@@ -237,10 +237,10 @@ nav a.active { color: var(--green-mid); font-weight: 500; }
 .diploma-next { right: -56px; transition: opacity 0.3s; }
 
 .diploma-item {
-  flex: 0 0 clamp(220px, 26vw, 300px);
+  flex: 0 0 clamp(92px, 10vw, 132px);
   scroll-snap-align: start;
   background: var(--white);
-  border-radius: var(--radius-md);
+  border-radius: 8px;
   overflow: hidden;
   box-shadow: var(--shadow-sm);
   cursor: pointer;
@@ -258,22 +258,21 @@ nav a.active { color: var(--green-mid); font-weight: 500; }
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 180px;
+  min-height: 68px;
+  aspect-ratio: 4 / 3;
   overflow: hidden;
 }
 
 .diploma-canvas {
   width: 100%;
-  height: auto;
+  height: 100%;
   display: block;
+  object-fit: cover;
+  object-position: top center;
 }
 
 .diploma-caption {
-  padding: 12px 14px;
-  font-size: 12px;
-  color: var(--text-muted);
-  line-height: 1.5;
-  margin: 0;
+  display: none;
 }
 
 .diploma-lightbox {
@@ -301,16 +300,7 @@ nav a.active { color: var(--green-mid); font-weight: 500; }
 }
 
 .lb-title {
-  position: absolute;
-  left: 50%;
-  bottom: 24px;
-  transform: translateX(-50%);
-  width: min(92vw, 900px);
-  margin: 0;
-  color: rgba(255,255,255,0.92);
-  text-align: center;
-  font-size: 14px;
-  line-height: 1.5;
+  display: none;
 }
 
 .lb-close,
