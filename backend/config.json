@@ -1,0 +1,42 @@
+{
+  "services": [
+    {
+      "id": "consult",
+      "type": "individual",
+      "capacity": 1,
+      "name": "Индивидуальная консультация",
+      "price": 3500,
+      "description": "Персональная онлайн-консультация"
+    },
+    {
+      "id": "consult-2",
+      "type": "individual",
+      "capacity": 1,
+      "name": "Пакет 2 консультации",
+      "price": 6500,
+      "description": "Две индивидуальные консультации со скидкой"
+    },
+    {
+      "id": "consult-5",
+      "type": "individual",
+      "capacity": 1,
+      "name": "Пакет 5 консультаций",
+      "price": 15000,
+      "description": "Пять индивидуальных консультаций со скидкой"
+    },
+    {
+      "id": "group",
+      "type": "group",
+      "capacity": 10,
+      "name": "Групповая сессия",
+      "price": 2500,
+      "description": "Групповая терапевтическая сессия"
+    }
+  ],
+  "schedule": {
+    "timeSlots": ["10:00", "11:30", "13:00", "14:30", "16:00", "17:30", "19:00"],
+    "daysAhead": 45,
+    "excludeWeekends": true
+  },
+  "sessionDurationMinutes": 60
+}
