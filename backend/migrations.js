@@ -24,6 +24,76 @@ async function ensureColumn(db, table, column, definition) {
 
 const migrations = [
   {
+    id: '000_base_schema',
+    up: async db => {
+      // Таблица платежей
+      await run(db, `
+        CREATE TABLE IF NOT EXISTS payments (
+          id TEXT PRIMARY KEY,
+          provider_payment_id TEXT,
+          order_id TEXT UNIQUE,
+          amount REAL NOT NULL,
+          currency TEXT DEFAULT 'RUB',
+          status TEXT DEFAULT 'pending',
+          description TEXT,
+          customer_email TEXT,
+          customer_phone TEXT,
+          customer_name TEXT,
+          service_id TEXT,
+          service_name TEXT,
+          comment TEXT,
+          payment_method TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          paid_at DATETIME,
+          metadata TEXT
+        )
+      `);
+
+      // Таблица записей на сеансы
+      await run(db, `
+        CREATE TABLE IF NOT EXISTS sessions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          payment_id TEXT,
+          client_name TEXT NOT NULL,
+          client_phone TEXT NOT NULL,
+          client_email TEXT,
+          service_id TEXT,
+          service_name TEXT NOT NULL,
+          session_date TEXT NOT NULL,
+          session_time TEXT NOT NULL,
+          session_datetime DATETIME NOT NULL,
+          amount REAL NOT NULL,
+          status TEXT DEFAULT 'scheduled',
+          comment TEXT,
+          reminder_sent INTEGER DEFAULT 0,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (payment_id) REFERENCES payments(id)
+        )
+      `);
+
+      // Таблица настроек
+      await run(db, `
+        CREATE TABLE IF NOT EXISTS settings (
+          key TEXT PRIMARY KEY,
+          value TEXT
+        )
+      `);
+
+      // Таблица исключений расписания
+      await run(db, `
+        CREATE TABLE IF NOT EXISTS schedule_exceptions (
+          date TEXT PRIMARY KEY,
+          reason TEXT
+        )
+      `);
+
+      // Индексы
+      await run(db, `CREATE INDEX IF NOT EXISTS idx_sessions_date ON sessions(session_date)`);
+      await run(db, `CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status)`);
+      await run(db, `CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status)`);
+    }
+  },
+  {
     id: '001_indexes_and_legacy_columns',
     up: async db => {
       await ensureColumn(db, 'payments', 'provider_payment_id', 'provider_payment_id TEXT');
@@ -32,11 +102,8 @@ const migrations = [
       await ensureColumn(db, 'sessions', 'comment', 'comment TEXT');
       await ensureColumn(db, 'sessions', 'service_id', 'service_id TEXT');
 
-      await run(db, 'CREATE INDEX IF NOT EXISTS idx_sessions_date ON sessions(session_date)');
-      await run(db, 'CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status)');
       await run(db, 'CREATE INDEX IF NOT EXISTS idx_sessions_datetime_status ON sessions(session_datetime, status)');
       await run(db, 'CREATE INDEX IF NOT EXISTS idx_sessions_payment_id ON sessions(payment_id)');
-      await run(db, 'CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status)');
       await run(db, 'CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_provider_payment_id ON payments(provider_payment_id) WHERE provider_payment_id IS NOT NULL');
     }
   },

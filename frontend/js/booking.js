@@ -30,15 +30,19 @@ function initBooking() {
   async function loadSchedule(serviceId = '') {
     try {
       scheduleLoaded = false;
+      scheduleErrorMessage = '';
       const response = await fetch(`${BACKEND_URL}/api/schedule?service=${serviceId}`);
       const data = await response.json();
+      console.log('📅 Schedule data received:', data);
       if (data.success) {
         ALL_SLOTS = data.allSlots || {}; FREE_SLOTS = data.freeSlots || {}; BUSY_SLOTS = data.busySlots || {}; SLOT_DETAILS = data.slotDetails || {};
-        scheduleLoaded = true;
-        if (state.currentStep === 2) renderCalendar();
+      } else {
+        scheduleErrorMessage = data.error || 'Не удалось загрузить расписание';
       }
+      scheduleLoaded = true;
+      if (state.currentStep === 2) renderCalendar();
     } catch (e) {
-      scheduleErrorMessage = 'Ошибка загрузки расписания';
+      scheduleErrorMessage = 'Ошибка соединения с сервером';
       scheduleLoaded = true;
       renderCalendar();
     }
@@ -63,6 +67,11 @@ function initBooking() {
 
     if (scheduleErrorMessage) { calGrid.innerHTML = `<div class="error">${scheduleErrorMessage}</div>`; return; }
     
+    if (!scheduleLoaded) {
+      calGrid.innerHTML = '<div class="cal-loading">Загрузка расписания...</div>';
+      return;
+    }
+
     ['Пн','Вт','Ср','Чт','Пт','Сб','Вс'].forEach(d => {
       const el = document.createElement('div'); el.className = 'cal-day-name'; el.textContent = d; calGrid.appendChild(el);
     });

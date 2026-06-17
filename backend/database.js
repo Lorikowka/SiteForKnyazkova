@@ -1,756 +1,172 @@
 /**
  * ═══════════════════════════════════════════════════════════
- * 📊 МОДУЛЬ БАЗЫ ДАННЫХ (SQLite)
+ * 📊 МОДУЛЬ БАЗЫ ДАННЫХ (SQLite) - ПУЛЕНЕПРОБИВАЕМЫЙ
  * ═══════════════════════════════════════════════════════════
  */
 
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
+const fs = require('fs');
 const { runMigrations } = require('./migrations');
 
-// Путь к базе данных
-const DB_PATH = path.join(__dirname, 'data', 'payments.db');
-let readyResolve;
-let readyReject;
-const ready = new Promise((resolve, reject) => {
-  readyResolve = resolve;
-  readyReject = reject;
-});
+const IS_VERCEL = process.env.VERCEL === '1' || !!process.env.NOW_REGION;
+const DB_PATH = IS_VERCEL ? '/tmp/payments.db' : path.join(__dirname, 'data', 'payments.db');
 
-// Создаём подключение
-const db = new sqlite3.Database(DB_PATH, (err) => {
-  if (err) {
-    console.error('❌ Ошибка подключения к БД:', err.message);
-  } else {
-    console.log('✅ Подключено к SQLite:', DB_PATH);
-    // WAL mode для лучшей конкурентности
-    db.run('PRAGMA journal_mode=WAL');
-    // Busy timeout — ждать 5 секунд перед SQLITE_BUSY
-    db.run('PRAGMA busy_timeout=5000');
+if (!IS_VERCEL) {
+  const dir = path.dirname(DB_PATH);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+}
+
+console.log(`📡 БД: ${DB_PATH}`);
+
+const sqliteInstance = new sqlite3.Database(DB_PATH, (err) => {
+  if (err) console.error('❌ Ошибка открытия БД:', err.message);
+  else {
+    console.log('✅ БД открыта');
+    if (!IS_VERCEL) sqliteInstance.run('PRAGMA journal_mode=WAL');
+    sqliteInstance.run('PRAGMA busy_timeout=5000');
   }
 });
 
-/**
- * Retry-обёртка для SQLite операций
- * Повторяет до 3 раз при SQLITE_BUSY с экспоненциальной задержкой
- */
-async function withRetry(fn, maxRetries = 3, baseDelay = 100) {
-  for (let attempt = 0; attempt < maxRetries; attempt++) {
-    try {
-      return await fn();
-    } catch (err) {
-      if (err.code === 'SQLITE_BUSY' && attempt < maxRetries - 1) {
-        const delay = baseDelay * Math.pow(2, attempt);
-        console.warn(`⚠️ SQLITE_BUSY, повторная попыка через ${delay}мс (попытка ${attempt + 1}/${maxRetries})`);
-        await new Promise(resolve => setTimeout(resolve, delay));
-      } else {
-        throw err;
-      }
-    }
-  }
-}
-
-// ═══════════════════════════════════════════════════════════
-// СОЗДАНИЕ ТАБЛИЦ
-// ═══════════════════════════════════════════════════════════
-
-db.serialize(() => {
-  // Таблица платежей
-  db.run(`
-    CREATE TABLE IF NOT EXISTS payments (
-      id TEXT PRIMARY KEY,
-      provider_payment_id TEXT,
-      order_id TEXT UNIQUE,
-      amount REAL NOT NULL,
-      currency TEXT DEFAULT 'RUB',
-      status TEXT DEFAULT 'pending',
-      description TEXT,
-      customer_email TEXT,
-      customer_phone TEXT,
-      customer_name TEXT,
-      service_id TEXT,
-      service_name TEXT,
-      comment TEXT,
-      payment_method TEXT,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      paid_at DATETIME,
-      metadata TEXT
-    )
-  `);
-
-  // Таблица записей на сеансы
-  db.run(`
-    CREATE TABLE IF NOT EXISTS sessions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      payment_id TEXT,
-      client_name TEXT NOT NULL,
-      client_phone TEXT NOT NULL,
-      client_email TEXT,
-      service_id TEXT,
-      service_name TEXT NOT NULL,
-      session_date TEXT NOT NULL,
-      session_time TEXT NOT NULL,
-      session_datetime DATETIME NOT NULL,
-      amount REAL NOT NULL,
-      status TEXT DEFAULT 'scheduled',
-      comment TEXT,
-      reminder_sent INTEGER DEFAULT 0,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (payment_id) REFERENCES payments(id)
-    )
-  `);
-
-  // Таблица настроек
-  db.run(`
-    CREATE TABLE IF NOT EXISTS settings (
-      key TEXT PRIMARY KEY,
-      value TEXT
-    )
-  `);
-
-  // Индексы для ускорения поиска
-  db.run(`CREATE INDEX IF NOT EXISTS idx_sessions_date ON sessions(session_date)`);
-  db.run(`CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status)`);
-  db.run(`CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status)`);
-
-  db.all(`PRAGMA table_info(payments)`, [], (err, rows) => {
-    if (err) {
-      console.error('❌ Ошибка проверки схемы payments:', err.message);
-      return;
-    }
-
-    const columns = new Set(rows.map(row => row.name));
-    if (!columns.has('provider_payment_id')) {
-      db.run(`ALTER TABLE payments ADD COLUMN provider_payment_id TEXT`, (alterErr) => {
-        if (alterErr) {
-          console.error('❌ Ошибка миграции provider_payment_id:', alterErr.message);
-        } else {
-          db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_provider_payment_id ON payments(provider_payment_id) WHERE provider_payment_id IS NOT NULL`);
-        }
-      });
-    } else {
-      db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_provider_payment_id ON payments(provider_payment_id) WHERE provider_payment_id IS NOT NULL`);
-    }
-
-    if (!columns.has('comment')) {
-      db.run(`ALTER TABLE payments ADD COLUMN comment TEXT`, (alterErr) => {
-        if (alterErr) {
-          console.error('❌ Ошибка миграции comment в payments:', alterErr.message);
-        }
-      });
-    }
-    if (!columns.has('service_id')) {
-      db.run(`ALTER TABLE payments ADD COLUMN service_id TEXT`, (alterErr) => {
-        if (alterErr) {
-          console.error('❌ Ошибка миграции service_id в payments:', alterErr.message);
-        }
-      });
-    }
-  });
-
-  db.all(`PRAGMA table_info(sessions)`, [], (err, rows) => {
-    if (err) {
-      console.error('❌ Ошибка проверки схемы sessions:', err.message);
-      return;
-    }
-
-    const columns = new Set(rows.map(row => row.name));
-    if (!columns.has('comment')) {
-      db.run(`ALTER TABLE sessions ADD COLUMN comment TEXT`, (alterErr) => {
-        if (alterErr) {
-          console.error('❌ Ошибка миграции comment в sessions:', alterErr.message);
-        }
-      });
-    }
-    if (!columns.has('service_id')) {
-      db.run(`ALTER TABLE sessions ADD COLUMN service_id TEXT`, (alterErr) => {
-        if (alterErr) {
-          console.error('❌ Ошибка миграции service_id в sessions:', alterErr.message);
-        }
-      });
-    }
-  });
+// Базовые обертки
+const run = (sql, params = []) => new Promise((res, rej) => {
+  sqliteInstance.run(sql, params, function(err) { if (err) rej(err); else res(this); });
 });
 
-// ═══════════════════════════════════════════════════════════
-// ФУНКЦИИ ДЛЯ РАБОТЫ С ПЛАТЕЖАМИ
-// ═══════════════════════════════════════════════════════════
+const all = (sql, params = []) => new Promise((res, rej) => {
+  sqliteInstance.all(sql, params, (err, rows) => { if (err) rej(err); else res(rows || []); });
+});
 
-/**
- * Создать запись о платеже
- */
-runMigrations(db)
-  .then(readyResolve)
-  .catch((err) => {
-    console.error('Database migration error:', err.message);
-    readyReject(err);
-  });
+const get = (sql, params = []) => new Promise((res, rej) => {
+  sqliteInstance.get(sql, params, (err, row) => { if (err) rej(err); else res(row); });
+});
 
-function createPayment(data) {
-  return new Promise((resolve, reject) => {
-    const {
-      id, provider_payment_id, order_id, amount, currency, status, description,
-      customer_email, customer_phone, customer_name, service_id, service_name, comment,
-      payment_method, metadata
-    } = data;
-
-    const sql = `
-      INSERT INTO payments (
-        id, provider_payment_id, order_id, amount, currency, status, description,
-        customer_email, customer_phone, customer_name, service_id, service_name, comment,
-        payment_method, metadata
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `;
-
-    const params = [
-      id, provider_payment_id || null, order_id, amount, currency || 'RUB', status || 'pending', description,
-      customer_email, customer_phone, customer_name, service_id || null, service_name, comment || null,
-      payment_method, metadata ? JSON.stringify(metadata) : null
-    ];
-
-    db.run(sql, params, function(err) {
-      if (err) reject(err);
-      else resolve({ id: this.id, order_id });
-    });
-  });
-}
-
-/**
- * Обновить статус платежа
- */
-function updatePaymentStatus(paymentId, status, paidAt = null) {
-  return new Promise((resolve, reject) => {
-    const sql = `UPDATE payments SET status = ?, paid_at = ? WHERE id = ?`;
-    const nextPaidAt = status === 'succeeded'
-      ? (paidAt || new Date().toISOString())
-      : null;
-
-    db.run(sql, [status, nextPaidAt, paymentId], function(err) {
-      if (err) reject(err);
-      else resolve({ changes: this.changes });
-    });
-  });
-}
-
-/**
- * Получить платёж по ID
- */
-function getPayment(paymentId) {
-  return new Promise((resolve, reject) => {
-    const sql = `SELECT * FROM payments WHERE id = ?`;
-    db.get(sql, [paymentId], (err, row) => {
-      if (err) reject(err);
-      else resolve(row);
-    });
-  });
-}
-
-function deletePayment(paymentId) {
-  return new Promise((resolve, reject) => {
-    const sql = `DELETE FROM payments WHERE id = ?`;
-    db.run(sql, [paymentId], function(err) {
-      if (err) reject(err);
-      else resolve({ changes: this.changes });
-    });
-  });
-}
-
-/**
- * Получить все платежи
- */
-function getAllPayments(limit = 50, offset = 0) {
-  return new Promise((resolve, reject) => {
-    const sql = `SELECT * FROM payments ORDER BY created_at DESC LIMIT ? OFFSET ?`;
-    db.all(sql, [limit, offset], (err, rows) => {
-      if (err) reject(err);
-      else resolve(rows);
-    });
-  });
-}
-
-function getPaymentByProviderId(providerPaymentId) {
-  return new Promise((resolve, reject) => {
-    const sql = `SELECT * FROM payments WHERE provider_payment_id = ?`;
-    db.get(sql, [providerPaymentId], (err, row) => {
-      if (err) reject(err);
-      else resolve(row);
-    });
-  });
-}
-
-function getPaymentsByStatuses(statuses = [], limit = 500) {
-  return new Promise((resolve, reject) => {
-    if (!Array.isArray(statuses) || statuses.length === 0) {
-      resolve([]);
-      return;
-    }
-
-    const placeholders = statuses.map(() => '?').join(', ');
-    const sql = `
-      SELECT * FROM payments
-      WHERE status IN (${placeholders})
-      ORDER BY created_at DESC
-      LIMIT ?
-    `;
-
-    db.all(sql, [...statuses, limit], (err, rows) => {
-      if (err) reject(err);
-      else resolve(rows);
-    });
-  });
-}
-
-function setPaymentProviderId(paymentId, providerPaymentId) {
-  return new Promise((resolve, reject) => {
-    const sql = `UPDATE payments SET provider_payment_id = ? WHERE id = ?`;
-    db.run(sql, [providerPaymentId, paymentId], function(err) {
-      if (err) reject(err);
-      else resolve({ changes: this.changes });
-    });
-  });
-}
-
-function updatePaymentBookingDetails(paymentId, data) {
-  return new Promise((resolve, reject) => {
-    const {
-      customer_email,
-      customer_phone,
-      customer_name,
-      service_id,
-      service_name,
-      comment,
-      metadata
-    } = data;
-
-    const sql = `
-      UPDATE payments
-      SET customer_email = ?,
-          customer_phone = ?,
-          customer_name = ?,
-          service_id = ?,
-          service_name = ?,
-          comment = ?,
-          metadata = ?
-      WHERE id = ?
-    `;
-
-    db.run(
-      sql,
-      [
-        customer_email || null,
-        customer_phone || null,
-        customer_name || null,
-        service_id || null,
-        service_name || null,
-        comment || null,
-        metadata ? JSON.stringify(metadata) : null,
-        paymentId
-      ],
-      function(err) {
-        if (err) reject(err);
-        else resolve({ changes: this.changes });
-      }
-    );
-  });
-}
-
-function countPayments() {
-  return new Promise((resolve, reject) => {
-    db.get('SELECT COUNT(*) AS total FROM payments', [], (err, row) => {
-      if (err) reject(err);
-      else resolve(row?.total || 0);
-    });
-  });
-}
-
-// ═══════════════════════════════════════════════════════════
-// ФУНКЦИИ ДЛЯ РАБОТЫ С СЕАНСАМИ
-// ═══════════════════════════════════════════════════════════
-
-/**
- * Создать запись о сеансе
- */
-function createSession(data) {
-  return new Promise((resolve, reject) => {
-    const {
-      payment_id, client_name, client_phone, client_email,
-      service_id, service_name, session_date, session_time, session_datetime,
-      amount, comment, status
-    } = data;
-
-    const sql = `
-      INSERT INTO sessions (
-        payment_id, client_name, client_phone, client_email,
-        service_id, service_name, session_date, session_time, session_datetime,
-        amount, comment, status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `;
-
-    const params = [
-      payment_id, client_name, client_phone, client_email, service_id || null,
-      service_name, session_date, session_time, session_datetime,
-      amount, comment, status || 'scheduled'
-    ];
-
-    db.run(sql, params, function(err) {
-      if (err) reject(err);
-      else resolve({ id: this.lastID, payment_id });
-    });
-  });
-}
-
-/**
- * Получить все сеансы
- */
-function getAllSessions(limit = 100, offset = 0) {
-  return new Promise((resolve, reject) => {
-    const sql = `
-      SELECT * FROM sessions 
-      WHERE session_datetime >= datetime('now', 'localtime')
-      ORDER BY session_datetime ASC 
-      LIMIT ?
-      OFFSET ?
-    `;
-    db.all(sql, [limit, offset], (err, rows) => {
-      if (err) reject(err);
-      else resolve(rows);
-    });
-  });
-}
-
-/**
- * Получить прошедшие сеансы
- */
-function getPastSessions(limit = 50, offset = 0) {
-  return new Promise((resolve, reject) => {
-    const sql = `
-      SELECT * FROM sessions 
-      WHERE session_datetime < datetime('now', 'localtime')
-      ORDER BY session_datetime DESC 
-      LIMIT ?
-      OFFSET ?
-    `;
-    db.all(sql, [limit, offset], (err, rows) => {
-      if (err) reject(err);
-      else resolve(rows);
-    });
-  });
-}
-
-function buildSessionFilter({ past = null, from = '', to = '', status = '' } = {}) {
-  const where = [];
-  const params = [];
-
-  if (from) { where.push('session_datetime >= ?'); params.push(from); }
-  if (to) { where.push('session_datetime < ?'); params.push(to); }
-  if (status) { where.push('status = ?'); params.push(status); }
-  if (!from && !to && past !== null) {
-    where.push(past ? "session_datetime < datetime('now', 'localtime')" : "session_datetime >= datetime('now', 'localtime')");
+// Промис готовности
+const ready = (async () => {
+  try {
+    await runMigrations(sqliteInstance);
+    console.log('✅ Миграции завершены');
+  } catch (err) {
+    console.error('❌ Ошибка миграций:', err.message);
+    throw err;
   }
+})();
 
-  return { clause: where.length ? 'WHERE ' + where.join(' AND ') : '', params };
+async function withRetry(fn, maxRetries = 3) {
+  for (let i = 0; i < maxRetries; i++) {
+    try { return await fn(); }
+    catch (err) {
+      if (i === maxRetries - 1) throw err;
+      await new Promise(r => setTimeout(r, 100 * Math.pow(2, i)));
+    }
+  }
 }
 
-function getSessionsByRange(filters = {}, limit = 100, offset = 0) {
-  return new Promise((resolve, reject) => {
-    const built = buildSessionFilter(filters);
-    const sql = 'SELECT * FROM sessions ' + built.clause + ' ORDER BY session_datetime ASC LIMIT ? OFFSET ?';
-    db.all(sql, [...built.params, limit, offset], (err, rows) => {
-      if (err) reject(err);
-      else resolve(rows);
-    });
-  });
-}
-
-function countSessionsByRange(filters = {}) {
-  return new Promise((resolve, reject) => {
-    const built = buildSessionFilter(filters);
-    const sql = 'SELECT COUNT(*) AS total FROM sessions ' + built.clause;
-    db.get(sql, built.params, (err, row) => {
-      if (err) reject(err);
-      else resolve(row?.total || 0);
-    });
-  });
-}
-
-function countSessions({ past = false } = {}) {
-  return new Promise((resolve, reject) => {
-    const sql = past
-      ? `SELECT COUNT(*) AS total FROM sessions WHERE session_datetime < datetime('now', 'localtime')`
-      : `SELECT COUNT(*) AS total FROM sessions WHERE session_datetime >= datetime('now', 'localtime')`;
-
-    db.get(sql, [], (err, row) => {
-      if (err) reject(err);
-      else resolve(row?.total || 0);
-    });
-  });
-}
-
-/**
- * Получить сеансы для напоминания (за 2 дня)
- */
-function getSessionsForReminder() {
-  return new Promise((resolve, reject) => {
-    // Находим сеансы через 48 часов (±1 час)
-    const sql = `
-      SELECT * FROM sessions 
-      WHERE session_datetime BETWEEN datetime('now', 'localtime', '+47 hours') 
-                                 AND datetime('now', 'localtime', '+49 hours')
-        AND reminder_sent = 0
-        AND status = 'scheduled'
-    `;
-    db.all(sql, [], (err, rows) => {
-      if (err) reject(err);
-      else resolve(rows);
-    });
-  });
-}
-
-/**
- * Пометить напоминание как отправленное
- */
-function markReminderSent(sessionId) {
-  return new Promise((resolve, reject) => {
-    const sql = `UPDATE sessions SET reminder_sent = 1 WHERE id = ?`;
-    db.run(sql, [sessionId], function(err) {
-      if (err) reject(err);
-      else resolve({ changes: this.changes });
-    });
-  });
-}
-
-/**
- * Обновить статус сеанса
- */
-function updateSessionStatus(sessionId, status) {
-  return new Promise((resolve, reject) => {
-    const sql = `UPDATE sessions SET status = ? WHERE id = ?`;
-    db.run(sql, [status, sessionId], function(err) {
-      if (err) reject(err);
-      else resolve({ changes: this.changes });
-    });
-  });
-}
-
-/**
- * Удалить сеанс
- */
-function deleteSession(sessionId) {
-  return new Promise((resolve, reject) => {
-    const sql = `DELETE FROM sessions WHERE id = ?`;
-    db.run(sql, [sessionId], function(err) {
-      if (err) reject(err);
-      else resolve({ changes: this.changes });
-    });
-  });
-}
-
-function deleteSessionsByPaymentId(paymentId) {
-  return new Promise((resolve, reject) => {
-    const sql = `DELETE FROM sessions WHERE payment_id = ?`;
-    db.run(sql, [paymentId], function(err) {
-      if (err) reject(err);
-      else resolve({ changes: this.changes });
-    });
-  });
-}
-
-function deleteAllSessions() {
-  return new Promise((resolve, reject) => {
-    const sql = `DELETE FROM sessions`;
-    db.run(sql, [], function(err) {
-      if (err) reject(err);
-      else resolve({ changes: this.changes });
-    });
-  });
-}
-
-function deleteAllPayments() {
-  return new Promise((resolve, reject) => {
-    const sql = `DELETE FROM payments`;
-    db.run(sql, [], function(err) {
-      if (err) reject(err);
-      else resolve({ changes: this.changes });
-    });
-  });
-}
-
-/**
- * Получить сеанс по ID
- */
-function getSession(sessionId) {
-  return new Promise((resolve, reject) => {
-    const sql = `SELECT * FROM sessions WHERE id = ?`;
-    db.get(sql, [sessionId], (err, row) => {
-      if (err) reject(err);
-      else resolve(row);
-    });
-  });
-}
-
-function getSessionsByPaymentId(paymentId) {
-  return new Promise((resolve, reject) => {
-    const sql = `SELECT * FROM sessions WHERE payment_id = ? ORDER BY created_at ASC`;
-    db.all(sql, [paymentId], (err, rows) => {
-      if (err) reject(err);
-      else resolve(rows);
-    });
-  });
-}
-
-function getBusySessionByDatetime(sessionDatetime) {
-  return new Promise((resolve, reject) => {
-    const sql = `
-      SELECT * FROM sessions
-      WHERE session_datetime = ?
-        AND status IN ('scheduled', 'completed')
-      LIMIT 1
-    `;
-
-    db.get(sql, [sessionDatetime], (err, row) => {
-      if (err) reject(err);
-      else resolve(row);
-    });
-  });
-}
-
-// ═══════════════════════════════════════════════════════════
-// ФУНКЦИИ ДЛЯ РАБОТЫ С ОТЗЫВАМИ
-// ═══════════════════════════════════════════════════════════
-
-function createReview(data) {
-  return new Promise((resolve, reject) => {
-    const { rating, name, contact, message, source = 'site' } = data;
-    const sql = `
-      INSERT INTO reviews (rating, name, contact, message, source)
-      VALUES (?, ?, ?, ?, ?)
-    `;
-
-    db.run(sql, [rating, name, contact, message, source], function(err) {
-      if (err) reject(err);
-      else resolve({ id: this.lastID });
-    });
-  });
-}
-
-function getAllReviews(limit = 50, offset = 0) {
-  return new Promise((resolve, reject) => {
-    const sql = `
-      SELECT * FROM reviews
-      ORDER BY created_at DESC
-      LIMIT ?
-      OFFSET ?
-    `;
-
-    db.all(sql, [limit, offset], (err, rows) => {
-      if (err) reject(err);
-      else resolve(rows);
-    });
-  });
-}
-
-// ═══════════════════════════════════════════════════════════
-// ФУНКЦИИ ДЛЯ НАСТРОЕК
-// ═══════════════════════════════════════════════════════════
-
-function setSetting(key, value) {
-  return new Promise((resolve, reject) => {
-    const sql = `INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)`;
-    db.run(sql, [key, value], function(err) {
-      if (err) reject(err);
-      else resolve({ key, value });
-    });
-  });
-}
-
-function getSetting(key) {
-  return new Promise((resolve, reject) => {
-    const sql = `SELECT value FROM settings WHERE key = ?`;
-    db.get(sql, [key], (err, row) => {
-      if (err) reject(err);
-      else resolve(row ? row.value : null);
-    });
-  });
-}
-
-// ═══════════════════════════════════════════════════════════
-// ЭКСПОРТ
-// ═══════════════════════════════════════════════════════════
-
-/**
- * Экранирует специальные HTML-символы для защиты от XSS
- */
-function escapeHtml(str) {
+// УТИЛИТЫ
+const escapeHtml = (str) => {
   if (typeof str !== 'string') return str;
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#x27;');
-}
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#x27;');
+};
 
-/**
- * Санитизирует входные данные (удаляет опасные HTML/JS для защиты от XSS)
- * Использует полноценную фильтрацию вместо простого удаления <>
- */
-function sanitizeInput(input) {
+const sanitizeInput = (input) => {
   if (typeof input !== 'string') return input;
-  return input
-    // Удаляем HTML-теги
-    .replace(/<\/?[^>]*>/g, '')
-    // Удаляем HTML-сущности
-    .replace(/&[a-zA-Z0-9#]+;/g, '')
-    // Удаляем javascript: URI
-    .replace(/javascript\s*:/gi, '')
-    // Удаляем on* обработчики
-    .replace(/\bon\w+\s*=/gi, '')
-    // Удаляем data: URI (могут содержать XSS)
-    .replace(/data\s*:/gi, '')
-    // Экранируем обратные кавычки (template literals)
-    .replace(/`/g, '')
-    .trim();
-}
+  return input.replace(/<\/?[^>]*>/g, '').replace(/&[a-zA-Z0-9#]+;/g, '').replace(/javascript\s*:/gi, '').replace(/\bon\w+\s*=/gi, '').replace(/data\s*:/gi, '').replace(/`/g, '').trim();
+};
 
+// ЭКСПОРТ
 module.exports = {
-  db,
   ready,
-  // Утилиты
+  withRetry,
+  run,
+  all,
+  get,
   escapeHtml,
   sanitizeInput,
-  withRetry,
-  // Платежи
-  createPayment,
-  updatePaymentStatus,
-  getPayment,
-  deletePayment,
-  getPaymentByProviderId,
-  getPaymentsByStatuses,
-  setPaymentProviderId,
-  updatePaymentBookingDetails,
-  getAllPayments,
-  countPayments,
-  // Сеансы
-  createSession,
-  getAllSessions,
-  getPastSessions,
-  getSessionsByRange,
-  countSessions,
-  countSessionsByRange,
-  getSessionsForReminder,
-  markReminderSent,
-  updateSessionStatus,
-  deleteSession,
-  deleteSessionsByPaymentId,
-  deleteAllSessions,
-  deleteAllPayments,
-  getSession,
-  getSessionsByPaymentId,
-  getBusySessionByDatetime,
-  // Отзывы
-  createReview,
-  getAllReviews,
-  // Настройки
-  setSetting,
-  getSetting
+  // Прокси для прямого доступа если нужно (но лучше не надо)
+  db: sqliteInstance,
+
+  // --- ВЫСОКОУРОВНЕВЫЕ ФУНКЦИИ ---
+  getAllSessions: (limit = 100) => 
+    all(`SELECT * FROM sessions WHERE session_datetime >= datetime('now', 'localtime') ORDER BY session_datetime ASC LIMIT ?`, [limit]),
+
+  getPaymentsByStatuses: (statuses = [], limit = 500) => {
+    if (!statuses.length) return Promise.resolve([]);
+    const placeholders = statuses.map(() => '?').join(',');
+    return all(`SELECT * FROM payments WHERE status IN (${placeholders}) ORDER BY created_at DESC LIMIT ?`, [...statuses, limit]);
+  },
+
+  getSessionsByPaymentId: (id) => 
+    all('SELECT * FROM sessions WHERE payment_id = ? ORDER BY created_at ASC', [id]),
+
+  createPayment: (d) => 
+    run(`INSERT INTO payments (id, provider_payment_id, order_id, amount, currency, status, description, customer_email, customer_phone, customer_name, service_id, service_name, comment, payment_method, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, 
+    [d.id, d.provider_payment_id || null, d.order_id, d.amount, d.currency || 'RUB', d.status || 'pending', d.description, d.customer_email, d.customer_phone, d.customer_name, d.service_id || null, d.service_name, d.comment || null, d.payment_method, d.metadata ? JSON.stringify(d.metadata) : null]),
+
+  updatePaymentStatus: (id, status, paidAt = null) => 
+    run(`UPDATE payments SET status = ?, paid_at = ? WHERE id = ?`, [status, paidAt, id]),
+
+  getPayment: (id) => 
+    get(`SELECT * FROM payments WHERE id = ?`, [id]),
+
+  createSession: (d) => 
+    run(`INSERT INTO sessions (payment_id, client_name, client_phone, client_email, service_id, service_name, session_date, session_time, session_datetime, amount, comment, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, 
+    [d.payment_id, d.client_name, d.client_phone, d.client_email, d.service_id || null, d.service_name, d.session_date, d.session_time, d.session_datetime, d.amount, d.comment, d.status || 'scheduled']),
+
+  getSetting: (key) => 
+    get(`SELECT value FROM settings WHERE key = ?`, [key]).then(r => r ? r.value : null),
+
+  setSetting: (key, val) => 
+    run(`INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)`, [key, val]),
+
+  // --- ВОССТАНОВЛЕННЫЕ ФУНКЦИИ ---
+  deletePayment: (id) => run(`DELETE FROM payments WHERE id = ?`, [id]),
+
+  getPaymentByProviderId: (id) => get(`SELECT * FROM payments WHERE provider_payment_id = ?`, [id]),
+
+  setPaymentProviderId: (id, providerId) => run(`UPDATE payments SET provider_payment_id = ? WHERE id = ?`, [providerId, id]),
+
+  updatePaymentBookingDetails: (id, d) => run(
+    `UPDATE payments SET customer_email = ?, customer_phone = ?, customer_name = ?, service_id = ?, service_name = ?, comment = ?, metadata = ? WHERE id = ?`, 
+    [d.customer_email || null, d.customer_phone || null, d.customer_name || null, d.service_id || null, d.service_name || null, d.comment || null, d.metadata ? JSON.stringify(d.metadata) : null, id]
+  ),
+
+  getAllPayments: (limit = 50, offset = 0) => all(`SELECT * FROM payments ORDER BY created_at DESC LIMIT ? OFFSET ?`, [limit, offset]),
+
+  countPayments: () => get('SELECT COUNT(*) AS total FROM payments').then(r => r ? r.total : 0),
+
+  getPastSessions: (limit = 50, offset = 0) => all(`SELECT * FROM sessions WHERE session_datetime < datetime('now', 'localtime') ORDER BY session_datetime DESC LIMIT ? OFFSET ?`, [limit, offset]),
+
+  getSessionsByRange: (filters = {}, limit = 100, offset = 0) => {
+    const where = [];
+    const params = [];
+    if (filters.from) { where.push('session_datetime >= ?'); params.push(filters.from); }
+    if (filters.to) { where.push('session_datetime < ?'); params.push(filters.to); }
+    if (filters.status) { where.push('status = ?'); params.push(filters.status); }
+    const clause = where.length ? 'WHERE ' + where.join(' AND ') : '';
+    return all(`SELECT * FROM sessions ${clause} ORDER BY session_datetime ASC LIMIT ? OFFSET ?`, [...params, limit, offset]);
+  },
+
+  countSessions: ({ past = false } = {}) => get(past ? `SELECT COUNT(*) AS total FROM sessions WHERE session_datetime < datetime('now', 'localtime')` : `SELECT COUNT(*) AS total FROM sessions WHERE session_datetime >= datetime('now', 'localtime')`).then(r => r ? r.total : 0),
+
+  updateSessionStatus: (id, status) => run(`UPDATE sessions SET status = ? WHERE id = ?`, [status, id]),
+
+  deleteSession: (id) => run(`DELETE FROM sessions WHERE id = ?`, [id]),
+
+  getSession: (id) => get(`SELECT * FROM sessions WHERE id = ?`, [id]),
+
+  getBusySessionByDatetime: (datetime) => get(`SELECT * FROM sessions WHERE session_datetime = ? AND status IN ('scheduled', 'completed') LIMIT 1`, [datetime]),
+
+  createReview: (d) => run(`INSERT INTO reviews (rating, name, contact, message, source) VALUES (?, ?, ?, ?, ?)`, [d.rating, d.name, d.contact, d.message, d.source || 'site']),
+
+  getAllReviews: (limit = 50, offset = 0) => all(`SELECT * FROM reviews ORDER BY created_at DESC LIMIT ? OFFSET ?`, [limit, offset]),
+
+  escapeHtml: (str) => {
+    if (typeof str !== 'string') return str;
+    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#x27;');
+  },
+
+  sanitizeInput: (input) => {
+    if (typeof input !== 'string') return input;
+    return input.replace(/<\/?[^>]*>/g, '').replace(/&[a-zA-Z0-9#]+;/g, '').replace(/javascript\s*:/gi, '').replace(/\bon\w+\s*=/gi, '').replace(/data\s*:/gi, '').replace(/`/g, '').trim();
+  }
 };

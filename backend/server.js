@@ -16,9 +16,38 @@ const db = require('./database');
 const app = express();
 const FRONTEND_PATH = path.join(__dirname, '..', 'frontend');
 
+// Доверяем прокси (необходимо для Vercel и правильной работы rate-limit)
+app.set('trust proxy', 1);
+
 // ——————————————————————————————
 // MIDDLEWARE
 // ——————————————————————————————
+
+// Простейшее логирование запросов
+app.use((req, res, next) => {
+  if (req.path.startsWith('/api/')) {
+    logger.info(`[API] ${req.method} ${req.path} - Query: ${JSON.stringify(req.query)}`);
+  }
+  next();
+});
+
+// Обеспечиваем готовность БД перед обработкой любого API запроса
+app.use('/api', async (req, res, next) => {
+  try {
+    await db.ready;
+    next();
+  } catch (err) {
+    logger.error('Database ready wait error: ' + err.message);
+    // Отправляем текст ошибки клиенту для отладки
+    res.status(500).json({ 
+      success: false, 
+      error: 'Database initialization failed',
+      details: err.message,
+      stack: config.app.nodeEnv === 'production' ? undefined : err.stack
+    });
+  }
+});
+
 app.use(helmet({
   contentSecurityPolicy: config.app.nodeEnv === 'production' ? {
     directives: {
@@ -36,7 +65,18 @@ app.use(helmet({
 }));
 
 app.use(cors({
-  origin: process.env.ALLOWED_ORIGINS?.split(',') || ['http://localhost:1488'],
+  origin: (origin, callback) => {
+    const allowed = process.env.ALLOWED_ORIGINS?.split(',') || [
+      'http://localhost:1488',
+      'http://localhost:3000',
+      'https://lorikowka.github.io'
+    ];
+    if (!origin || allowed.some(a => origin.startsWith(a))) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key', 'X-Bot-API-Key']
@@ -76,19 +116,45 @@ app.use('/api', serviceRoutes); // services and health
 // ——————————————————————————————
 // STATIC FILES
 // ——————————————————————————————
-app.use(express.static(FRONTEND_PATH));
+if (fs.existsSync(FRONTEND_PATH)) {
+  app.use(express.static(FRONTEND_PATH));
+}
+
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', time: new Date().toISOString() });
+});
 
 app.get('/payment-failed', (req, res) => {
-  res.sendFile(path.join(FRONTEND_PATH, 'payment-failed.html'));
+  if (fs.existsSync(path.join(FRONTEND_PATH, 'payment-failed.html'))) {
+    res.sendFile(path.join(FRONTEND_PATH, 'payment-failed.html'));
+  } else {
+    res.status(404).json({ success: false, error: 'Payment failed page not found' });
+  }
 });
 
 app.get('*', (req, res, next) => {
   if (req.path.startsWith('/api/')) return next();
+  
+  // Если фронтенда нет рядом (как на Vercel), просто отдаем 404 для не-API путей
+  if (!fs.existsSync(FRONTEND_PATH)) {
+    return res.status(404).json({ 
+      success: false, 
+      message: 'API Server is running. Frontend is hosted elsewhere.',
+      endpoints: ['/api/schedule', '/api/services', '/api/reviews']
+    });
+  }
+
   const filePath = path.join(FRONTEND_PATH, req.path);
   if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
     return res.sendFile(filePath);
   }
-  res.sendFile(path.join(FRONTEND_PATH, 'index.html'));
+  
+  const indexFile = path.join(FRONTEND_PATH, 'index.html');
+  if (fs.existsSync(indexFile)) {
+    res.sendFile(indexFile);
+  } else {
+    res.status(404).send('Not Found');
+  }
 });
 
 // ——————————————————————————————

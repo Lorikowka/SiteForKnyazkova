@@ -650,6 +650,19 @@ nav a.active { color: var(--green-mid); font-weight: 500; }
   margin-bottom: 24px;
 }
 
+.cal-loading,
+.calendar-grid .error {
+  grid-column: 1 / -1;
+  padding: 40px 20px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+.calendar-grid .error {
+  color: #e05a5a;
+}
+
 .cal-day-name {
   text-align: center;
   font-size: 11px;
