@@ -1,0 +1,40 @@
+services:
+  backend:
+    build: ./backend
+    container_name: app_backend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file:
+      - ./.env
+    environment:
+      - NODE_ENV=production
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+
+    
+  frontend:
+    build: ./frontend
+    container_name: app_frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./frontend:/usr/share/nginx/html
+    depends_on:
+      - backend
+
+  vk-bot:
+    build: ./vk-bot
+    container_name: app_vk_bot
+    restart: unless-stopped
+    env_file:
+      - ./.env
+    environment:
+      - BACKEND_URL=http://backend:3000
+    volumes:
+      - ./vk-bot/data:/app/data
+      - ./vk-bot/logs:/app/logs
+    depends_on:
+      - backend

@@ -3,7 +3,7 @@ const config = require('../../config.json');
 const YOOKASSA_SHOP_ID = process.env.YOOKASSA_SHOP_ID;
 const YOOKASSA_SECRET_KEY = process.env.YOOKASSA_SECRET_KEY;
 const YOOKASSA_WEBHOOK_SECRET = process.env.YOOKASSA_WEBHOOK_SECRET;
-const SITE_URL = process.env.SITE_URL || 'http://localhost:1488';
+const SITE_URL = process.env.SITE_URL || 'http://localhost:3000';
 const MOCK_MODE = process.env.MOCK_MODE === 'true';
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;

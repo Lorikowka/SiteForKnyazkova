@@ -67,6 +67,7 @@ app.use(helmet({
 app.use(cors({
   origin: (origin, callback) => {
     const allowed = process.env.ALLOWED_ORIGINS?.split(',') || [
+      'http://localhost',
       'http://localhost:1488',
       'http://localhost:3000',
       'https://lorikowka.github.io'
