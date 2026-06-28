@@ -17,17 +17,19 @@ const createReview = async (req, res) => {
       source: 'site'
     });
 
+    const reviewId = review && typeof review.lastID === 'number' ? review.lastID : review?.id;
+
     await sendTelegramNotification([
       'Новый отзыв с сайта',
-      `ID: ${review.id}`,
+      `ID: ${reviewId}`,
       `Оценка: ${rating}/5`,
       `Имя: ${sanitizedName}`,
       `Контакт: ${sanitizedContact}`,
       `Отзыв: ${sanitizedMessage}`
     ].join('\n'));
 
-    logger.info(`Review created: #${review.id}, rating: ${rating}, contact: ${sanitizedContact}`);
-    res.status(201).json({ success: true, id: review.id });
+    logger.info(`Review created: #${reviewId}, rating: ${rating}, contact: ${sanitizedContact}`);
+    res.status(201).json({ success: true, id: reviewId });
   } catch (error) {
     logger.error(`Review error: ${error.message}`);
     res.status(500).json({ success: false, error: 'Не удалось отправить отзыв' });

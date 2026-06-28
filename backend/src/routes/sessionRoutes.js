@@ -10,6 +10,19 @@ const router = express.Router();
 const strictLimiter = rateLimit({ windowMs: 60000, max: 10, message: { success: false, error: 'Слишком много попыток' } });
 
 router.get('/', requireApiKey, sessionController.getSessions);
+router.post('/', requireApiKey, [
+  body('clientName').isString().trim().notEmpty(),
+  body('clientPhone').isString().trim().notEmpty(),
+  body('sessionDate').matches(/^\d{4}-\d{2}-\d{2}$/),
+  body('sessionTime').matches(/^\d{2}:\d{2}$/),
+  body('clientEmail').optional().isString(),
+  body('serviceId').optional().isString(),
+  body('serviceName').optional().isString(),
+  body('sessionDatetime').optional().isString(),
+  body('amount').optional().isNumeric(),
+  body('comment').optional().isString(),
+  handleValidationErrors
+], sessionController.createSession);
 router.patch('/:id/status', requireApiKey, [body('status').isIn(['scheduled', 'completed', 'cancelled']), handleValidationErrors], sessionController.updateSessionStatus);
 router.delete('/:id', requireApiKey, sessionController.cancelSession);
 

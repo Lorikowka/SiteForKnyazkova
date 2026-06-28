@@ -1,0 +1,10 @@
+{
+  "initialized": true,
+  "sessions": {
+    "1": {
+      "status": "scheduled",
+      "session_datetime": "2099-12-01T10:00:00"
+    }
+  },
+  "payments": {}
+}

@@ -12,6 +12,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 import os
 import random
+import re
 import urllib.parse
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -65,7 +66,8 @@ def load_env_file(path: Path) -> None:
         os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 
-load_env_file(BASE_DIR / ".env")
+load_env_file(BASE_DIR / ".env")  # Загрузка локального .env (имеет приоритет)
+load_env_file(BASE_DIR.parent / ".env")  # Загрузка корневого .env
 
 
 def parse_int_list(value: str) -> set[int]:
@@ -93,6 +95,7 @@ class Settings:
     morning_summary_hour: int
     event_watcher_enabled: bool
     event_poll_interval_seconds: int
+    disable_ssl_verify: bool
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -102,11 +105,12 @@ class Settings:
             admin_ids=parse_int_list(os.getenv("VK_ADMIN_IDS", "")),
             backend_url=os.getenv("BACKEND_URL", "http://localhost:1488").rstrip("/"),
             api_key=(os.getenv("BOT_API_KEY") or os.getenv("API_KEY", "")).strip(),
-            reminders_enabled=os.getenv("REMINDERS_ENABLED", "true").lower() == "true",
-            morning_summary_enabled=os.getenv("MORNING_SUMMARY_ENABLED", "true").lower() == "true",
+            reminders_enabled=os.getenv("REMINDERS_ENABLED", "false").lower() == "true",
+            morning_summary_enabled=os.getenv("MORNING_SUMMARY_ENABLED", "false").lower() == "true",
             morning_summary_hour=int(os.getenv("MORNING_SUMMARY_HOUR", "8") or "8"),
-            event_watcher_enabled=os.getenv("EVENT_WATCHER_ENABLED", "true").lower() == "true",
+            event_watcher_enabled=os.getenv("EVENT_WATCHER_ENABLED", "false").lower() == "true",
             event_poll_interval_seconds=max(10, int(os.getenv("EVENT_POLL_INTERVAL_SECONDS", "30") or "30")),
+            disable_ssl_verify=os.getenv("DISABLE_SSL_VERIFY", "false").lower() == "true",
         )
 
 
@@ -121,7 +125,8 @@ class BackendClient:
 
     async def open(self) -> None:
         if self.session is None or self.session.closed:
-            self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15))
+            connector = aiohttp.TCPConnector(ssl=False) if SETTINGS.disable_ssl_verify else None
+            self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15), connector=connector)
 
     async def close(self) -> None:
         if self.session and not self.session.closed:
@@ -193,19 +198,35 @@ class BackendClient:
         data = await self.request("DELETE", f"/api/sessions/{session_id}")
         return bool(data and data.get("success"))
 
+    async def create_session(self, payload: dict[str, Any]) -> dict[str, Any] | None:
+        return await self.request("POST", "/api/sessions", json=payload)
+
+    async def block_date(self, date: str, reason: str = "") -> bool:
+        data = await self.request("POST", "/api/schedule/admin/block", json={"date": date, "reason": reason})
+        return bool(data and data.get("success"))
+
+    async def unblock_date(self, date: str) -> bool:
+        data = await self.request("DELETE", f"/api/schedule/admin/block/{date}")
+        return bool(data and data.get("success"))
+
+    async def blocked_dates(self) -> list[dict[str, Any]]:
+        data = await self.request("GET", "/api/schedule/admin/blocks")
+        return data.get("blocks", []) if data and data.get("success") else []
+
+    async def schedule(self, service_id: str = "consult") -> dict[str, Any] | None:
+        return await self.request("GET", f"/api/schedule?serviceId={urllib.parse.quote(service_id)}")
+
     async def update_session_status(self, session_id: int, status: str) -> bool:
         data = await self.request("PATCH", f"/api/sessions/{session_id}/status", json={"status": status})
         return bool(data and data.get("success"))
 
     async def reminders_due(self) -> list[dict[str, Any]]:
-        data = await self.request("GET", "/api/reminders/due")
+        data = await self.request("GET", "/api/sessions/reminders/due")
         return data.get("sessions", []) if data and data.get("success") else []
 
     async def mark_reminder_sent(self, session_id: int) -> bool:
-        data = await self.request("POST", f"/api/reminders/{session_id}/mark-sent")
+        data = await self.request("POST", f"/api/sessions/reminders/{session_id}/mark-sent")
         return bool(data and data.get("success"))
-
-
 class VkClient:
     def __init__(self, token: str, group_id: int) -> None:
         self.token = token
@@ -217,7 +238,8 @@ class VkClient:
 
     async def open(self) -> None:
         if self.session is None or self.session.closed:
-            self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=35))
+            connector = aiohttp.TCPConnector(ssl=False) if SETTINGS.disable_ssl_verify else None
+            self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=35), connector=connector)
 
     async def close(self) -> None:
         if self.session and not self.session.closed:
@@ -267,13 +289,16 @@ class VkClient:
         return data.get("updates", [])
 
     async def send_message(self, peer_id: int, message: str, keyboard: dict[str, Any] | None = None) -> None:
-        await self.api(
-            "messages.send",
-            peer_id=peer_id,
-            random_id=random.randint(1, 2_147_483_647),
-            message=message[:4000],
-            keyboard=json.dumps(keyboard, ensure_ascii=False) if keyboard else None,
-        )
+        try:
+            await self.api(
+                "messages.send",
+                peer_id=peer_id,
+                random_id=random.randint(1, 2_147_483_647),
+                message=message[:4000],
+                keyboard=json.dumps(keyboard, ensure_ascii=False) if keyboard else None,
+            )
+        except Exception as error:
+            LOGGER.warning("Failed to send VK message to %s: %s", peer_id, error)
 
 
 api = BackendClient(SETTINGS.backend_url, SETTINGS.api_key)
@@ -322,16 +347,61 @@ def main_keyboard() -> dict[str, Any]:
         "one_time": False,
         "buttons": [
             [
-                {"action": {"type": "text", "label": "Сегодня"}, "color": "primary"},
-                {"action": {"type": "text", "label": "Завтра"}, "color": "primary"},
+                {"action": {"type": "text", "label": "Записи"}, "color": "primary"},
+                {"action": {"type": "text", "label": "Управление"}, "color": "primary"},
             ],
             [
-                {"action": {"type": "text", "label": "Неделя"}, "color": "secondary"},
-                {"action": {"type": "text", "label": "Все записи"}, "color": "secondary"},
-            ],
-            [
+                {"action": {"type": "text", "label": "Выходные"}, "color": "secondary"},
                 {"action": {"type": "text", "label": "Платежи"}, "color": "secondary"},
+            ],
+            [
                 {"action": {"type": "text", "label": "Статистика"}, "color": "secondary"},
+            ],
+        ],
+    }
+
+
+def records_keyboard() -> dict[str, Any]:
+    return {
+        "one_time": False,
+        "buttons": [
+            [
+                {"action": {"type": "text", "label": "Все записи"}, "color": "primary"},
+                {"action": {"type": "text", "label": "Ближайшие"}, "color": "primary"},
+            ],
+            [
+                {"action": {"type": "text", "label": "Назад"}, "color": "secondary"},
+            ],
+        ],
+    }
+
+
+def management_keyboard() -> dict[str, Any]:
+    return {
+        "one_time": False,
+        "buttons": [
+            [
+                {"action": {"type": "text", "label": "Создать запись"}, "color": "positive"},
+                {"action": {"type": "text", "label": "Удалить запись"}, "color": "negative"},
+            ],
+            [
+                {"action": {"type": "text", "label": "Назад"}, "color": "secondary"},
+            ],
+        ],
+    }
+
+
+def blocked_keyboard() -> dict[str, Any]:
+    return {
+        "one_time": False,
+        "buttons": [
+            [
+                {"action": {"type": "text", "label": "Показать выходные"}, "color": "secondary"},
+                {"action": {"type": "text", "label": "Добавить выходной"}, "color": "primary"},
+            ],
+            [
+                {"action": {"type": "text", "label": "Удалить выходной"}, "color": "negative"},
+                {"action": {"type": "text", "label": "Назад"}, "color": "secondary"},
             ],
         ],
     }
@@ -456,9 +526,83 @@ def split_messages(text: str, max_len: int = 3500) -> list[str]:
     return chunks
 
 
-async def send_sessions(peer_id: int, title: str, sessions: list[dict[str, Any]], limit: int = 25) -> None:
+def parse_add_command(text: str) -> dict[str, str] | None:
+    body = text.strip()
+    if not body.lower().startswith("/add"):
+        return None
+
+    rest = body[4:].strip()
+    parts = [part.strip() for part in rest.split("|")]
+    if len(parts) < 3:
+        return None
+
+    date_time = parts[0].split()
+    if len(date_time) < 2:
+        return None
+
+    session_date, session_time = date_time[0], date_time[1]
+    if not _DATE_RE.match(session_date) or not _TIME_RE.match(session_time):
+        return None
+
+    payload = {
+        "sessionDate": session_date,
+        "sessionTime": session_time,
+        "clientName": parts[1],
+        "clientPhone": parts[2],
+        "serviceId": parts[3] if len(parts) > 3 and parts[3] else "consult",
+    }
+    if len(parts) > 4 and parts[4]:
+        payload["comment"] = parts[4]
+    return payload
+
+
+def parse_block_command(text: str) -> tuple[str, str] | None:
+    for prefix in ("/block", "/выходной"):
+        if text.lower().startswith(prefix):
+            parts = text.split(maxsplit=2)
+            if len(parts) < 2:
+                return None
+            date_str = parts[1]
+            if not _DATE_RE.match(date_str):
+                return None
+            reason = parts[2] if len(parts) > 2 else ""
+            return date_str, reason
+    return None
+
+
+def parse_unblock_command(text: str) -> str | None:
+    for prefix in ("/unblock", "/открыть"):
+        if text.lower().startswith(prefix):
+            parts = text.split(maxsplit=1)
+            if len(parts) < 2:
+                return None
+            date_str = parts[1].strip()
+            return date_str if _DATE_RE.match(date_str) else None
+    return None
+
+
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_TIME_RE = re.compile(r"^\d{2}:\d{2}$")
+
+
+async def send_blocked_dates(peer_id: int) -> None:
+    blocks = await api.blocked_dates()
+    if not blocks:
+        await vk.send_message(peer_id, "Закрытых дат нет.", main_keyboard())
+        return
+
+    lines = ["Закрытые даты (выходные):"]
+    for item in blocks[:40]:
+        reason = item.get("reason") or "без причины"
+        lines.append(f"• {item.get('date')} — {reason}")
+    if len(blocks) > 40:
+        lines.append(f"Показано 40 из {len(blocks)}.")
+    await vk.send_message(peer_id, "\n".join(lines), main_keyboard())
+
+
+async def send_sessions(peer_id: int, title: str, sessions: list[dict[str, Any]], limit: int = 25, keyboard: dict[str, Any] | None = None) -> None:
     if not sessions:
-        await vk.send_message(peer_id, f"{title}\n\nЗаписей нет.", main_keyboard())
+        await vk.send_message(peer_id, f"{title}\n\nЗаписей нет.", keyboard or records_keyboard())
         return
 
     blocks = [format_header(title, sessions)]
@@ -467,7 +611,18 @@ async def send_sessions(peer_id: int, title: str, sessions: list[dict[str, Any]]
         blocks.append(f"Показано {limit} из {len(sessions)} записей.")
 
     for chunk in split_messages("\n\n".join(blocks)):
-        await vk.send_message(peer_id, chunk, main_keyboard())
+        await vk.send_message(peer_id, chunk, keyboard or records_keyboard())
+
+
+async def send_all_sessions(peer_id: int) -> None:
+    future, past = await asyncio.gather(api.sessions(past=False, limit=500), api.sessions(past=True, limit=500))
+    sessions = sorted(future + past, key=lambda item: (parse_dt(item) or datetime.min, item.get("id", 0)))
+    await send_sessions(peer_id, "Все записи за всё время", sessions, limit=40, keyboard=records_keyboard())
+
+
+async def send_upcoming_sessions(peer_id: int) -> None:
+    sessions = await api.sessions(past=False, limit=200)
+    await send_sessions(peer_id, "Ближайшие записи", sessions, limit=30, keyboard=records_keyboard())
 
 
 async def send_payments(peer_id: int) -> None:
@@ -525,7 +680,7 @@ async def handle_command(peer_id: int, user_id: int, text: str) -> None:
     normalized = text.strip()
     lower = normalized.lower()
 
-    if lower in {"/start", "/menu", "меню", "обновить"}:
+    if lower in {"/start", "/menu", "меню", "обновить", "назад"}:
         health = await api.health()
         protected = await api.can_access_protected_api() if SETTINGS.api_key else False
         await vk.send_message(
@@ -533,25 +688,47 @@ async def handle_command(peer_id: int, user_id: int, text: str) -> None:
             "Админ-панель записей\n\n"
             f"Backend: {'ok' if health else 'unavailable'}\n"
             f"Защищенный API: {'ok' if protected else 'unavailable'}\n\n"
-            "Команды: /today, /tomorrow, /week, /sessions, /payments, /stats, /complete ID, /cancel ID",
+            "Выберите раздел:\n"
+            "• Записи — посмотреть записи\n"
+            "• Управление — создать или удалить запись\n"
+            "• Выходные — назначить или снять выходной",
             main_keyboard(),
         )
         return
 
     if lower in {"/today", "сегодня"}:
         start, end = period_today()
-        return await send_sessions(peer_id, "Записи на сегодня", await api.sessions(start=start, end=end, limit=200))
+        return await send_sessions(peer_id, "Записи на сегодня", await api.sessions(start=start, end=end, limit=200), keyboard=records_keyboard())
 
     if lower in {"/tomorrow", "завтра"}:
         start, end = period_tomorrow()
-        return await send_sessions(peer_id, "Записи на завтра", await api.sessions(start=start, end=end, limit=200))
+        return await send_sessions(peer_id, "Записи на завтра", await api.sessions(start=start, end=end, limit=200), keyboard=records_keyboard())
 
     if lower in {"/week", "неделя", "эта неделя"}:
         start, end = period_week()
-        return await send_sessions(peer_id, "Записи на эту неделю", await api.sessions(start=start, end=end, limit=300))
+        return await send_sessions(peer_id, "Записи на эту неделю", await api.sessions(start=start, end=end, limit=300), keyboard=records_keyboard())
 
-    if lower in {"/sessions", "все записи"}:
-        return await send_sessions(peer_id, "Будущие записи", await api.sessions(past=False, limit=200))
+    if lower in {"записи", "записи меню", "/records"}:
+        await vk.send_message(peer_id, "Выберите режим просмотра записей:", records_keyboard())
+        return
+
+    if lower in {"/sessions", "все записи", "записи за всё время"}:
+        return await send_all_sessions(peer_id)
+
+    if lower in {"ближайшие", "в ближайшее время", "следующие"}:
+        return await send_upcoming_sessions(peer_id)
+
+    if lower in {"управление", "удалять создавать записи", "меню управления"}:
+        await vk.send_message(peer_id, "Управление записями:", management_keyboard())
+        return
+
+    if lower in {"создать запись", "создать"}:
+        await vk.send_message(peer_id, "Чтобы создать запись, отправьте команду:\n/add YYYY-MM-DD HH:MM | Имя | Телефон | [услуга]", management_keyboard())
+        return
+
+    if lower in {"удалить запись", "удалить"}:
+        await vk.send_message(peer_id, "Чтобы удалить запись, отправьте команду:\n/cancel ID", management_keyboard())
+        return
 
     if lower in {"/payments", "платежи"}:
         return await send_payments(peer_id)
@@ -559,13 +736,60 @@ async def handle_command(peer_id: int, user_id: int, text: str) -> None:
     if lower in {"/stats", "статистика"}:
         return await send_stats(peer_id)
 
+    if lower in {"выходные", "меню выходных", "/blocks", "/выходные"}:
+        await vk.send_message(peer_id, "Меню выходных:", blocked_keyboard())
+        return
+
+    if lower in {"показать выходные", "список выходных"}:
+        return await send_blocked_dates(peer_id)
+
+    if lower in {"добавить выходной", "добавить"}:
+        await vk.send_message(peer_id, "Чтобы назначить выходной, отправьте команду:\n/block YYYY-MM-DD [причина]", blocked_keyboard())
+        return
+
+    if lower in {"удалить выходной", "снять выходной"}:
+        await vk.send_message(peer_id, "Чтобы убрать выходной, отправьте команду:\n/unblock YYYY-MM-DD", blocked_keyboard())
+        return
+
+    add_payload = parse_add_command(normalized)
+    if add_payload:
+        data = await api.create_session(add_payload)
+        if data and data.get("success"):
+            session = data.get("session") or {}
+            await vk.send_message(
+                peer_id,
+                "Запись создана.\n\n" + format_session_short(session),
+                main_keyboard(),
+            )
+        else:
+            await vk.send_message(peer_id, "Не удалось создать запись. Проверьте дату, время и свободный слот.", main_keyboard())
+        return
+
+    block_args = parse_block_command(normalized)
+    if block_args:
+        date_str, reason = block_args
+        ok = await api.block_date(date_str, reason)
+        message = f"Дата {date_str} закрыта для записи." if ok else "Не удалось закрыть дату."
+        await vk.send_message(peer_id, message, main_keyboard())
+        return
+
+    unblock_date = parse_unblock_command(normalized)
+    if unblock_date:
+        ok = await api.unblock_date(unblock_date)
+        message = f"Дата {unblock_date} снова открыта." if ok else "Не удалось открыть дату."
+        await vk.send_message(peer_id, message, main_keyboard())
+        return
+
+    if lower in {"/blocks", "/выходные", "выходные"}:
+        return await send_blocked_dates(peer_id)
+
     if lower.startswith("/complete "):
         session_id = int(lower.split(maxsplit=1)[1])
         ok = await api.update_session_status(session_id, "completed")
         await vk.send_message(peer_id, "Статус обновлен." if ok else "Не удалось обновить статус.", main_keyboard())
         return
 
-    if lower.startswith("/cancel "):
+    if lower.startswith("/cancel ") or lower.startswith("/delete "):
         session_id = int(lower.split(maxsplit=1)[1])
         ok = await api.delete_session(session_id)
         await vk.send_message(peer_id, "Запись отменена." if ok else "Не удалось отменить запись.", main_keyboard())
@@ -578,11 +802,20 @@ async def handle_command(peer_id: int, user_id: int, text: str) -> None:
             "/today - сегодня\n"
             "/tomorrow - завтра\n"
             "/week - неделя\n"
-            "/sessions - все будущие\n"
+            "/sessions - все записи за всё время\n"
+            "Записи / Ближайшие — меню просмотра\n"
             "/payments - платежи\n"
             "/stats - статистика\n"
             "/complete ID - отметить проведенной\n"
-            "/cancel ID - отменить запись",
+            "/cancel ID - отменить запись\n"
+            "/delete ID - то же, что /cancel\n\n"
+            "Добавить запись:\n"
+            "/add ДАТА ВРЕМЯ | Имя | Телефон | [услуга] | [комментарий]\n"
+            "Пример: /add 2026-07-15 10:00 | Иван | +79001234567 | consult\n\n"
+            "Выходные:\n"
+            "/block YYYY-MM-DD [причина] — закрыть день\n"
+            "/unblock YYYY-MM-DD — открыть день\n"
+            "/blocks — список закрытых дат",
             main_keyboard(),
         )
         return
@@ -731,11 +964,11 @@ async def handle_update(update: dict[str, Any]) -> None:
 
 async def run_bot() -> None:
     if not SETTINGS.vk_token:
-        raise RuntimeError("VK_BOT_TOKEN is not configured")
+        raise RuntimeError("VK_BOT_TOKEN is not configured in .env file. Please provide a community token.")
     if SETTINGS.vk_group_id <= 0:
-        raise RuntimeError("VK_GROUP_ID is not configured")
+        raise RuntimeError("VK_GROUP_ID is not configured in .env file. Please set it to your numeric VK community ID.")
     if not SETTINGS.admin_ids:
-        LOGGER.warning("VK_ADMIN_IDS is empty; bot access is open to every VK user")
+        LOGGER.warning("VK_ADMIN_IDS is empty; bot access is open to any user who messages the community.")
 
     health = await api.health()
     protected = await api.can_access_protected_api() if SETTINGS.api_key else False

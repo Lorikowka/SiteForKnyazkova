@@ -63,6 +63,69 @@ const cancelSession = async (req, res) => {
   }
 };
 
+const createSession = async (req, res) => {
+  try {
+    const {
+      clientName,
+      clientPhone,
+      clientEmail,
+      serviceId,
+      serviceName,
+      sessionDate,
+      sessionTime,
+      sessionDatetime,
+      amount,
+      comment
+    } = req.body;
+
+    if (!clientName || !clientPhone || !sessionDate || !sessionTime) {
+      return res.status(400).json({ success: false, error: 'Нужны: clientName, clientPhone, sessionDate, sessionTime' });
+    }
+
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(sessionDate) || !/^\d{2}:\d{2}$/.test(sessionTime)) {
+      return res.status(400).json({ success: false, error: 'Формат даты YYYY-MM-DD, времени HH:MM' });
+    }
+
+    const blocked = await db.getScheduleException(sessionDate);
+    if (blocked) {
+      return res.status(409).json({ success: false, error: 'Эта дата закрыта для записи', code: 'date_blocked' });
+    }
+
+    const serviceConfig = getServiceConfig(serviceId, serviceName);
+    const resolvedServiceName = serviceName || serviceConfig.name;
+    const datetime = sessionDatetime || `${sessionDate}T${sessionTime}:00`;
+
+    const createdSession = await createSessionWithSlotGuard(db, {
+      payment_id: null,
+      client_name: db.sanitizeInput(clientName),
+      client_phone: db.sanitizeInput(clientPhone),
+      client_email: clientEmail ? db.sanitizeInput(clientEmail) : null,
+      service_id: serviceConfig.id,
+      service_name: resolvedServiceName,
+      session_date: sessionDate,
+      session_time: sessionTime,
+      session_datetime: datetime,
+      amount: amount ?? serviceConfig.price ?? 0,
+      comment: comment ? db.sanitizeInput(comment) : null,
+      status: 'scheduled'
+    }, { serviceType: serviceConfig.type, capacity: serviceConfig.capacity });
+
+    const session = await db.getSession(createdSession.id);
+    await sendVkBookingNotification('booking_created', { payment: {}, session, status: 'scheduled' });
+    logger.info(`✅ Запись #${createdSession.id} создана через API: ${datetime}`);
+    res.status(201).json({ success: true, sessionId: createdSession.id, session });
+  } catch (error) {
+    if (error.code === 'SLOT_TAKEN' || error.code === 'SLOT_FULL') {
+      return res.status(409).json({ success: false, error: 'Слот занят', code: error.code });
+    }
+    if (error.code === 'DUPLICATE_GROUP_BOOKING') {
+      return res.status(409).json({ success: false, error: 'Клиент уже записан на этот слот', code: error.code });
+    }
+    logger.error(`Create session error: ${error.message}`);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
 const confirmBooking = async (req, res) => {
   try {
     const { id } = req.params;
@@ -158,4 +221,4 @@ const markReminderSent = async (req, res) => {
   }
 };
 
-module.exports = { getSessions, updateSessionStatus, cancelSession, confirmBooking, cancelBookingByClient, getRemindersDue, markReminderSent };
+module.exports = { getSessions, createSession, updateSessionStatus, cancelSession, confirmBooking, cancelBookingByClient, getRemindersDue, markReminderSent };

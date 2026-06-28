@@ -5,6 +5,7 @@ const { requireApiKey } = require('../middleware/auth');
 const router = express.Router();
 
 router.get('/', scheduleController.getSchedule);
+router.get('/admin/blocks', requireApiKey, scheduleController.listBlockedDates);
 router.post('/admin/block', requireApiKey, scheduleController.blockDate);
 router.delete('/admin/block/:date', requireApiKey, scheduleController.unblockDate);
 

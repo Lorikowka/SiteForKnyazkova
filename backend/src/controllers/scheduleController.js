@@ -208,4 +208,14 @@ const unblockDate = async (req, res) => {
   }
 };
 
-module.exports = { getSchedule, blockDate, unblockDate, buildSlotUsageMap, getServiceConfig, getSlotStateFromEntries, getStoredPaymentMetadata };
+const listBlockedDates = async (req, res) => {
+  try {
+    const blocks = await db.getScheduleExceptions();
+    res.json({ success: true, blocks });
+  } catch (error) {
+    logger.error(`List blocked dates error: ${error.message}`);
+    res.status(500).json({ success: false, error: 'Schedule Error: ' + error.message });
+  }
+};
+
+module.exports = { getSchedule, blockDate, unblockDate, listBlockedDates, buildSlotUsageMap, getServiceConfig, getSlotStateFromEntries, getStoredPaymentMetadata };

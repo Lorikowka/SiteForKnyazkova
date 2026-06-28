@@ -142,8 +142,22 @@ module.exports = {
     if (filters.from) { where.push('session_datetime >= ?'); params.push(filters.from); }
     if (filters.to) { where.push('session_datetime < ?'); params.push(filters.to); }
     if (filters.status) { where.push('status = ?'); params.push(filters.status); }
+    if (filters.past === true) { where.push("session_datetime < datetime('now', 'localtime')"); }
+    if (filters.past === false) { where.push("session_datetime >= datetime('now', 'localtime')"); }
     const clause = where.length ? 'WHERE ' + where.join(' AND ') : '';
     return all(`SELECT * FROM sessions ${clause} ORDER BY session_datetime ASC LIMIT ? OFFSET ?`, [...params, limit, offset]);
+  },
+
+  countSessionsByRange: (filters = {}) => {
+    const where = [];
+    const params = [];
+    if (filters.from) { where.push('session_datetime >= ?'); params.push(filters.from); }
+    if (filters.to) { where.push('session_datetime < ?'); params.push(filters.to); }
+    if (filters.status) { where.push('status = ?'); params.push(filters.status); }
+    if (filters.past === true) { where.push("session_datetime < datetime('now', 'localtime')"); }
+    if (filters.past === false) { where.push("session_datetime >= datetime('now', 'localtime')"); }
+    const clause = where.length ? 'WHERE ' + where.join(' AND ') : '';
+    return get(`SELECT COUNT(*) AS total FROM sessions ${clause}`, params).then(r => r ? r.total : 0);
   },
 
   countSessions: ({ past = false } = {}) => get(past ? `SELECT COUNT(*) AS total FROM sessions WHERE session_datetime < datetime('now', 'localtime')` : `SELECT COUNT(*) AS total FROM sessions WHERE session_datetime >= datetime('now', 'localtime')`).then(r => r ? r.total : 0),
@@ -155,6 +169,21 @@ module.exports = {
   getSession: (id) => get(`SELECT * FROM sessions WHERE id = ?`, [id]),
 
   getBusySessionByDatetime: (datetime) => get(`SELECT * FROM sessions WHERE session_datetime = ? AND status IN ('scheduled', 'completed') LIMIT 1`, [datetime]),
+
+  getScheduleExceptions: () => all('SELECT date, reason FROM schedule_exceptions ORDER BY date ASC'),
+
+  getScheduleException: (date) => get('SELECT date, reason FROM schedule_exceptions WHERE date = ?', [date]),
+
+  getSessionsForReminder: () => all(`
+    SELECT * FROM sessions
+    WHERE status = 'scheduled'
+      AND reminder_sent = 0
+      AND session_datetime > datetime('now', 'localtime')
+      AND session_datetime <= datetime('now', '+48 hours', 'localtime')
+    ORDER BY session_datetime ASC
+  `),
+
+  markReminderSent: (id) => run('UPDATE sessions SET reminder_sent = 1 WHERE id = ?', [id]),
 
   createReview: (d) => run(`INSERT INTO reviews (rating, name, contact, message, source) VALUES (?, ?, ?, ?, ?)`, [d.rating, d.name, d.contact, d.message, d.source || 'site']),
 
