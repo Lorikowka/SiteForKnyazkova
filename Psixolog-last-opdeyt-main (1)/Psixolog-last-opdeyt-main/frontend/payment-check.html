@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: https:; connect-src 'self' https://api.yookassa.ru; frame-src 'self' https://yookassa.ru; base-uri 'self'; form-action 'self'; frame-ancestors 'self'; object-src 'none'">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
+  <meta http-equiv="X-Content-Type-Options" content="nosniff">
+  <meta http-equiv="X-Frame-Options" content="SAMEORIGIN">
+  <title>Проверка оплаты...</title>
+  <meta name="robots" content="noindex, nofollow">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Sora', sans-serif;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 40px 20px;
+      background: linear-gradient(135deg, #f5f0eb 0%, #e8e0d9 100%);
+    }
+    .card {
+      background: white;
+      border-radius: 16px;
+      padding: 48px 40px;
+      max-width: 480px;
+      width: 100%;
+      text-align: center;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.08);
+    }
+    .icon {
+      width: 80px; height: 80px;
+      margin: 0 auto 24px;
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 40px; color: white;
+    }
+    .icon.loading { background: linear-gradient(135deg, #667eea, #764ba2); animation: pulse 1.5s infinite; }
+    .icon.success { background: linear-gradient(135deg, #4CAF50, #8BC34A); }
+    .icon.error { background: linear-gradient(135deg, #f44336, #e91e63); }
+    @keyframes pulse { 0%,100%{transform:scale(1)} 50%{transform:scale(1.05)} }    h1 { font-family: 'Sora', serif; font-size: 28px; font-weight: 700; color: #2c2c2c; margin-bottom: 16px; }
+    p { font-size: 16px; line-height: 1.6; color: #666; margin-bottom: 24px; }
+    .detail { font-size: 14px; color: #999; margin-bottom: 8px; }
+    .btn {
+      display: inline-block; color: white; padding: 14px 32px; border-radius: 8px;
+      text-decoration: none; font-weight: 500; transition: transform 0.2s, box-shadow 0.2s;
+      border: none; cursor: pointer; font-size: 16px;
+    }
+    .btn.primary { background: linear-gradient(135deg,#667eea,#764ba2); }
+    .btn.primary:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(102,126,234,0.4); }
+    .btn.error { background: linear-gradient(135deg,#f44336,#e91e63); }
+    .btn.error:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(244,67,54,0.4); }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+
+<div class="card">
+  <!-- Загрузка -->
+  <div id="loading">
+    <div class="icon loading">⏳</div>
+    <h1>Проверяем оплату...</h1>
+    <p>Пожалуйста, подождите</p>
+  </div>
+
+  <!-- Успех -->
+  <div id="success" class="hidden">
+    <div class="icon success">✓</div>
+    <h1>Оплата прошла успешно!</h1>
+    <p>Спасибо! Мы скоро свяжемся с вами для подтверждения записи.</p>
+    <p class="detail">Перенаправляем на главную...</p>
+  </div>
+
+  <!-- Ошибка -->
+  <div id="error" class="hidden">
+    <div class="icon error">✕</div>
+    <h1 id="error-title">Оплата не прошла</h1>
+    <p id="error-text">К сожалению, платёж не был обработан.</p>
+    <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;">
+      <a href="index.html#payment" class="btn error">Попробовать снова</a>
+      <a href="index.html" class="btn primary">На главную</a>
+    </div>
+  </div>
+</div>
+
+<script>
+  const urlParams = new URLSearchParams(window.location.search);
+  const paymentId = urlParams.get('payment_id');
+  const paymentToken = urlParams.get('token');
+
+  let retries = 0;
+  const MAX_RETRIES = 5;
+  const RETRY_INTERVAL = 2000;
+
+  function redirectToFailed(reason) {
+    const params = new URLSearchParams();
+    if (paymentId) params.set('payment_id', paymentId);
+    if (paymentToken) params.set('token', paymentToken);
+    if (reason) params.set('reason', reason);
+    window.location.href = `payment-failed.html?${params.toString()}`;
+  }
+
+  function showState(id) {
+    ['loading','success','error'].forEach(s => {
+      document.getElementById(s).classList.toggle('hidden', s !== id);
+    });
+  }
+
+  function getBookingDraft(paymentId) {
+    try {
+      const drafts = JSON.parse(sessionStorage.getItem('payment_booking_drafts') || '{}');
+      return drafts[paymentId] || null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function clearBookingDraft(paymentId) {
+    try {
+      const drafts = JSON.parse(sessionStorage.getItem('payment_booking_drafts') || '{}');
+      if (!drafts[paymentId]) return;
+      delete drafts[paymentId];
+      sessionStorage.setItem('payment_booking_drafts', JSON.stringify(drafts));
+    } catch (error) {
+      // noop
+    }
+  }
+
+  async function confirmBooking() {
+    const draft = getBookingDraft(paymentId);
+    const response = await fetch(`/api/payments/${encodeURIComponent(paymentId)}/confirm-booking`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        token: paymentToken || draft?.token || '',
+        customerEmail: draft?.customerEmail || '',
+        customerName: draft?.customerName,
+        customerPhone: draft?.customerPhone,
+        serviceId: draft?.serviceId || '',
+        serviceName: draft?.serviceName,
+        sessionDate: draft?.sessionDate,
+        sessionTime: draft?.sessionTime,
+        sessionDatetime: draft?.sessionDatetime,
+        comment: draft?.comment || ''
+      })
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.success) {
+      if (response.status === 400 && !draft) {
+        redirectToFailed('booking_lost');
+        return;
+      }
+      if (response.status === 409 && data.code === 'slot_taken') {
+        redirectToFailed('slot_taken_after_payment');
+        return;
+      }
+      if (response.status === 409 && data.code === 'duplicate_group_booking') {
+        redirectToFailed('duplicate_group_booking');
+        return;
+      }
+      redirectToFailed('booking_confirm_failed');
+      return;
+    }
+
+    clearBookingDraft(paymentId);
+    showState('success');
+    setTimeout(() => { window.location.href = 'index.html?payment_success=true'; }, 2000);
+  }
+
+  function checkPayment() {
+    if (!paymentId) {
+      redirectToFailed('cancelled');
+      return;
+    }
+
+    const params = new URLSearchParams();
+    if (paymentToken) params.set('token', paymentToken);
+
+    fetch(`/api/payment/${encodeURIComponent(paymentId)}?${params.toString()}`)
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && data.payment) {
+          const status = data.payment.status;
+
+          if (status === 'succeeded' || status === 'waiting_for_capture') {
+            confirmBooking().catch(() => redirectToFailed('booking_confirm_failed'));
+          } else if (status === 'canceled' || status === 'expired') {
+            redirectToFailed(status);
+          } else {
+            retries++;
+            if (retries < MAX_RETRIES) {
+              setTimeout(checkPayment, RETRY_INTERVAL);
+            } else {
+              redirectToFailed('pending');
+            }
+          }
+        } else {
+          redirectToFailed('check_failed');
+        }
+      })
+      .catch(() => {
+        retries++;
+        if (retries < MAX_RETRIES) {
+          setTimeout(checkPayment, RETRY_INTERVAL);
+        } else {
+          redirectToFailed('connection_error');
+        }
+      });
+  }
+
+  // Начинаем проверку
+  checkPayment();
+</script>
+</body>
+</html>

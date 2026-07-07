@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: https:; connect-src 'self' https://api.yookassa.ru; frame-src 'self' https://yookassa.ru; base-uri 'self'; form-action 'self'; frame-ancestors 'self'; object-src 'none'">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
+  <meta http-equiv="X-Content-Type-Options" content="nosniff">
+  <meta http-equiv="X-Frame-Options" content="SAMEORIGIN">
+  <title>Ошибка оплаты</title>
+  <meta name="robots" content="noindex, nofollow">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Sora', sans-serif;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 40px 20px;
+      background: linear-gradient(135deg, #f5f0eb 0%, #e8e0d9 100%);
+    }
+    .card {
+      background: white;
+      border-radius: 16px;
+      padding: 48px 40px;
+      max-width: 520px;
+      width: 100%;
+      text-align: center;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.08);
+    }
+    .icon {
+      width: 80px; height: 80px;
+      margin: 0 auto 24px;
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 40px; color: white;
+      background: linear-gradient(135deg, #f44336, #e91e63);
+    }    h1 { font-family: 'Sora', serif; font-size: 28px; font-weight: 700; color: #2c2c2c; margin-bottom: 16px; }
+    p { font-size: 16px; line-height: 1.6; color: #666; margin-bottom: 24px; }
+    .payment-details {
+      background: #f9f6f3;
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 24px;
+      text-align: left;
+    }
+    .payment-details .row {
+      display: flex;
+      justify-content: space-between;
+      padding: 6px 0;
+      font-size: 14px;
+    }
+    .payment-details .row span:first-child { color: #888; }
+    .payment-details .row strong { color: #333; }
+    .btn {
+      display: inline-block; color: white; padding: 14px 32px; border-radius: 8px;
+      text-decoration: none; font-weight: 500; transition: transform 0.2s, box-shadow 0.2s;
+      border: none; cursor: pointer; font-size: 16px; margin: 4px;
+    }
+    .btn.primary { background: linear-gradient(135deg,#667eea,#764ba2); }
+    .btn.primary:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(102,126,234,0.4); }
+    .btn.error { background: linear-gradient(135deg,#f44336,#e91e63); }
+    .btn.error:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(244,67,54,0.4); }
+    .support-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: #667eea;
+      text-decoration: none;
+      font-size: 14px;
+      margin-top: 16px;
+    }
+    .support-link:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+
+<div class="card">
+  <div class="icon">✕</div>
+  <h1>Платёж не прошёл</h1>
+  <p>К сожалению, оплата не была завершена. Это могло произойти по разным причинам — от ошибки банка до истечения времени ожидания.</p>
+
+  <div class="payment-details" id="details" style="display:none;">
+    <div class="row"><span>Статус:</span><strong id="detail-status">—</strong></div>
+    <div class="row"><span>Сумма:</span><strong id="detail-amount">—</strong></div>
+    <div class="row"><span>ID платежа:</span><strong id="detail-id">—</strong></div>
+  </div>
+
+  <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;">
+    <button type="button" class="btn error" id="retry-btn">Попробовать снова</button>
+    <a href="index.html" class="btn primary">На главную</a>
+  </div>
+
+  <a href="https://t.me/Ekaterina_K" target="_blank" class="support-link">
+    💬 Написать в Telegram для поддержки
+  </a>
+</div>
+
+<script>
+  const urlParams = new URLSearchParams(window.location.search);
+  const paymentId = urlParams.get('payment_id');
+  const paymentToken = urlParams.get('token');
+  const reason = urlParams.get('reason');
+  const retryBtn = document.getElementById('retry-btn');
+  let paymentDetails = null;
+  let bookingDraft = null;
+
+  const reasonMap = {
+    cancelled: {
+      title: 'Оплата отменена',
+      text: 'Вы не завершили оплату. Попробуйте выбрать время и оплатить запись ещё раз.'
+    },
+    canceled: {
+      title: 'Оплата отменена',
+      text: 'Платёж был отменён. Вы можете попробовать снова.'
+    },
+    expired: {
+      title: 'Время оплаты истекло',
+      text: 'Сессия оплаты истекла до завершения платежа. Попробуйте начать запись заново.'
+    },
+    pending: {
+      title: 'Оплата не подтверждена',
+      text: 'Мы не получили подтверждение оплаты вовремя. Если деньги списались, свяжитесь с нами.'
+    },
+    check_failed: {
+      title: 'Не удалось проверить оплату',
+      text: 'Сервер не смог подтвердить статус платежа. Попробуйте открыть страницу позже или свяжитесь с нами.'
+    },
+    connection_error: {
+      title: 'Ошибка соединения',
+      text: 'Не удалось связаться с сервером для проверки оплаты. Попробуйте позже.'
+    },
+    booking_lost: {
+      title: 'Данные записи не найдены',
+      text: 'Оплата могла пройти, но данные выбранного слота не сохранились в браузере. Свяжитесь с нами, если деньги списались.'
+    },
+    booking_confirm_failed: {
+      title: 'Оплата прошла, но запись не подтверждена',
+      text: 'Мы не смогли завершить запись после оплаты. Если деньги списались, напишите нам в Telegram.'
+    },
+    slot_taken_after_payment: {
+      title: 'Слот уже занят',
+      text: 'Пока проходила оплата, кто-то успел занять это время. Нужно выбрать другой слот или связаться с нами по вопросу возврата.'
+    },
+    duplicate_group_booking: {
+      title: 'Место уже забронировано',
+      text: 'На этот групповой тренинг уже есть запись с этими контактами. Если нужно изменить запись, напишите нам в Telegram.'
+    }
+  };
+
+  if (reason && reasonMap[reason]) {
+    document.querySelector('h1').textContent = reasonMap[reason].title;
+    document.querySelector('.card > p').textContent = reasonMap[reason].text;
+  }
+
+  function getDraft(paymentId) {
+    try {
+      const drafts = JSON.parse(sessionStorage.getItem('payment_booking_drafts') || '{}');
+      return drafts[paymentId] || null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function saveDraft(paymentId, draft) {
+    try {
+      const drafts = JSON.parse(sessionStorage.getItem('payment_booking_drafts') || '{}');
+      drafts[paymentId] = draft;
+      sessionStorage.setItem('payment_booking_drafts', JSON.stringify(drafts));
+    } catch (error) {
+      // noop
+    }
+  }
+
+  function clearDraft(paymentId) {
+    try {
+      const drafts = JSON.parse(sessionStorage.getItem('payment_booking_drafts') || '{}');
+      if (!drafts[paymentId]) return;
+      delete drafts[paymentId];
+      sessionStorage.setItem('payment_booking_drafts', JSON.stringify(drafts));
+    } catch (error) {
+      // noop
+    }
+  }
+
+  async function discardPaymentIfPossible() {
+    if (!paymentId || !paymentToken) return;
+
+    try {
+      await fetch(`/api/payments/${encodeURIComponent(paymentId)}/discard`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: paymentToken })
+      });
+    } catch (error) {
+      // noop
+    }
+  }
+
+  bookingDraft = paymentId ? getDraft(paymentId) : null;
+
+  async function retryPayment() {
+    const amount = bookingDraft?.amount || paymentDetails?.amount || null;
+    const description = bookingDraft?.description || bookingDraft?.serviceName || paymentDetails?.description || 'Консультация психолога';
+
+    if (!amount) {
+      window.location.href = 'index.html#payment';
+      return;
+    }
+
+    retryBtn.disabled = true;
+    retryBtn.textContent = 'Перенаправляем...';
+
+    try {
+      const response = await fetch('/api/create-payment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          amount,
+          description,
+          customerEmail: bookingDraft?.customerEmail || '',
+          customerName: bookingDraft?.customerName || '',
+          customerPhone: bookingDraft?.customerPhone || '',
+          serviceId: bookingDraft?.serviceId || '',
+          serviceName: bookingDraft?.serviceName || description,
+          sessionDate: bookingDraft?.sessionDate || '',
+          sessionTime: bookingDraft?.sessionTime || '',
+          sessionDatetime: bookingDraft?.sessionDatetime || '',
+          comment: bookingDraft?.comment || '',
+          orderId: `retry_${Date.now()}`
+        })
+      });
+
+      const data = await response.json().catch(() => null);
+      if (!response.ok || !data?.success || !data?.confirmationUrl) {
+        throw new Error(data?.error || `HTTP ${response.status}`);
+      }
+
+      if (bookingDraft) {
+        saveDraft(data.paymentId, {
+          ...bookingDraft,
+          token: data.statusToken || '',
+          amount,
+          description
+        });
+        if (paymentId) clearDraft(paymentId);
+      }
+
+      window.location.href = data.confirmationUrl;
+    } catch (error) {
+      retryBtn.disabled = false;
+      retryBtn.textContent = 'Попробовать снова';
+      alert('Не удалось заново открыть оплату в ЮKassa. Попробуйте ещё раз или начните запись заново.');
+    }
+  }
+
+  if (retryBtn) {
+    retryBtn.addEventListener('click', retryPayment);
+  }
+
+  if (paymentId) {
+    const params = new URLSearchParams();
+    if (paymentToken) params.set('token', paymentToken);
+
+    fetch(`/api/payment/${encodeURIComponent(paymentId)}?${params.toString()}`)
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && data.payment) {
+          const p = data.payment;
+          paymentDetails = p;
+          document.getElementById('detail-status').textContent = p.status || '—';
+          document.getElementById('detail-amount').textContent = p.amount ? `${p.amount} ₽` : '—';
+          document.getElementById('detail-id').textContent = p.id || '—';
+          document.getElementById('details').style.display = 'block';
+
+          if (p.status === 'canceled' || p.status === 'expired') {
+            discardPaymentIfPossible();
+          }
+        }
+      })
+      .catch(() => {
+        // Не показываем детали если ошибка
+      });
+  }
+
+  if (reason === 'cancelled' || reason === 'canceled' || reason === 'expired') {
+    discardPaymentIfPossible();
+  }
+</script>
+</body>
+</html>
