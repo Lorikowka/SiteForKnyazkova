@@ -1,36 +1,36 @@
 {
   "services": [
     {
-      "id": "consult",
+      "id": "consult-online",
       "type": "individual",
       "capacity": 1,
-      "name": "Индивидуальная консультация",
-      "price": 3500,
-      "description": "Персональная онлайн-консультация"
+      "name": "Индивидуальная консультация (онлайн)",
+      "price": 3000,
+      "description": "Онлайн-консультация, 60 минут"
     },
     {
-      "id": "consult-2",
+      "id": "consult-offline",
       "type": "individual",
       "capacity": 1,
-      "name": "Пакет 2 консультации",
-      "price": 6500,
-      "description": "Две индивидуальные консультации со скидкой"
+      "name": "Индивидуальная консультация (очно)",
+      "price": 3000,
+      "description": "Очная консультация, 50 минут"
     },
     {
-      "id": "consult-5",
-      "type": "individual",
-      "capacity": 1,
-      "name": "Пакет 5 консультаций",
-      "price": 15000,
-      "description": "Пять индивидуальных консультаций со скидкой"
-    },
-    {
-      "id": "group",
+      "id": "group-online",
       "type": "group",
       "capacity": 10,
-      "name": "Групповая сессия",
-      "price": 2500,
-      "description": "Групповая терапевтическая сессия"
+      "name": "Групповое консультирование (онлайн)",
+      "price": 1000,
+      "description": "Онлайн-практика, 60 минут"
+    },
+    {
+      "id": "group-offline",
+      "type": "group",
+      "capacity": 10,
+      "name": "Групповое консультирование (очно)",
+      "price": 1000,
+      "description": "Очная практика, 60 минут"
     }
   ],
   "schedule": {

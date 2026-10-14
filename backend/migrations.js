@@ -1,3 +1,5 @@
+const { services = [] } = require('./config.json');
+
 function run(db, sql, params = []) {
   return new Promise((resolve, reject) => {
     db.run(sql, params, function onRun(err) {
@@ -152,6 +154,26 @@ const migrations = [
         )
       `);
       await run(db, `CREATE INDEX IF NOT EXISTS idx_reviews_status ON reviews(status)`);
+    }
+  },
+  {
+    id: '004_individual_slot_guard_by_config',
+    up: async db => {
+      // Раньше индекс считал групповой только услугу с id = 'group'.
+      // Теперь групповых услуг может быть несколько, поэтому список
+      // исключений строится из config.json (плюс легаси-id 'group').
+      const groupIds = new Set(['group', ...services.filter(s => s.type === 'group').map(s => s.id)]);
+      const list = [...groupIds]
+        .map(id => `'${String(id).replace(/'/g, "''")}'`)
+        .join(', ');
+
+      await run(db, 'DROP INDEX IF EXISTS idx_sessions_individual_slot_guard');
+      await run(db, `
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_individual_slot_guard
+        ON sessions(session_datetime)
+        WHERE status IN ('scheduled', 'completed')
+          AND COALESCE(service_id, '') NOT IN (${list})
+      `);
     }
   }
 ];

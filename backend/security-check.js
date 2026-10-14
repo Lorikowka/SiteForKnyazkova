@@ -220,7 +220,6 @@ function checkFrontendSecurity() {
   const indexHtml = fs.readFileSync(indexHtmlPath, 'utf8');
   const htmlChecks = [
     { pattern: /Content-Security-Policy/i, desc: 'Content-Security-Policy' },
-    { pattern: /X-Content-Type-Options/i, desc: 'X-Content-Type-Options' },
     { pattern: /Referrer-Policy|name=["']referrer["']/i, desc: 'Referrer-Policy' }
   ];
 
@@ -232,6 +231,18 @@ function checkFrontendSecurity() {
       log.warn(`${desc}: НЕ установлен`);
       results.warnings.push(`${desc} не установлен`);
     }
+  }
+
+  // X-Content-Type-Options не работает как <meta>-тег — это только заголовок
+  // ответа, поэтому проверяем его там, где он реально задаётся: в nginx.
+  const nginxPath = path.join(FRONTEND_DIR, 'nginx.conf');
+  const nginxConf = fs.existsSync(nginxPath) ? fs.readFileSync(nginxPath, 'utf8') : '';
+  if (/X-Content-Type-Options/i.test(nginxConf)) {
+    log.success('X-Content-Type-Options: заголовок задан в nginx.conf');
+    results.passed.push('X-Content-Type-Options (заголовок nginx)');
+  } else {
+    log.warn('X-Content-Type-Options: НЕ найден в nginx.conf');
+    results.warnings.push('X-Content-Type-Options не установлен');
   }
 
   // Инлайн-скрипты нежелательны (CSP script-src 'self').

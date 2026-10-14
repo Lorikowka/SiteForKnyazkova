@@ -91,7 +91,7 @@ const createPayment = async (req, res) => {
     const requestedAmount = Number(amount);
     const resolvedAmount = Number.isFinite(serviceConfig.price) && serviceConfig.price > 0
       ? serviceConfig.price
-      : (Number.isFinite(requestedAmount) && requestedAmount > 0 ? requestedAmount : 3500);
+      : (Number.isFinite(requestedAmount) && requestedAmount > 0 ? requestedAmount : 3000);
 
     const orderNumber = orderId || `order_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
     const paymentId = `pay_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;

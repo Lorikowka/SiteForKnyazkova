@@ -30,7 +30,6 @@ const getServiceConfig = (serviceId, serviceName = '') => {
   const normalizedName = String(serviceName || '').toLowerCase();
   const service = config.services.find(item => item.id === serviceId)
     || config.services.find(item => normalizedName.includes(String(item.name || '').toLowerCase()))
-    || config.services.find(item => item.id === 'consult')
     || config.services[0];
   return { ...service, type: service?.type || 'individual', capacity: Math.max(1, Number(service?.capacity) || 1) };
 };
@@ -42,7 +41,9 @@ const getRowServiceConfig = (row) => {
 
 const getSlotStateFromEntries = (service, entries = []) => {
   const hasIndividual = entries.some(entry => entry.type !== 'group');
-  const groupCount = entries.filter(entry => entry.type === 'group').length;
+  // У групповых практик вместимость считается по конкретной услуге:
+  // группы «онлайн» и «очно» занимают места независимо друг от друга.
+  const groupCount = entries.filter(entry => entry.type === 'group' && entry.serviceId === service.id).length;
   if (service.type === 'group') {
     const remaining = Math.max(0, service.capacity - groupCount);
     return { available: !hasIndividual && remaining > 0, code: hasIndividual ? 'slot_taken' : (remaining > 0 ? 'available' : 'group_full'), occupied: groupCount, capacity: service.capacity, remaining };
@@ -112,7 +113,7 @@ const getSchedule = async (req, res) => {
   try {
     const { days, service: serviceQuery, serviceId: serviceIdQuery } = req.query;
     const safeDays = Math.min(parseInt(days) || config.schedule.daysAhead, 90);
-    const service = getServiceConfig(serviceIdQuery || serviceQuery || 'consult');
+    const service = getServiceConfig(serviceIdQuery || serviceQuery || config.services[0]?.id || '');
     const allTimes = config.schedule.timeSlots;
     
     // Оптимизированный сбор занятых слотов

@@ -48,13 +48,13 @@ function request(method, url, { body, headers } = {}) {
 
 async function createMockPayment(overrides = {}) {
   const payload = {
-    amount: 3500,
-    description: 'Индивидуальная консультация',
+    amount: 3000,
+    description: 'Индивидуальная консультация (онлайн)',
     customerEmail: 'client@example.com',
     customerName: 'Тестовый Клиент',
     customerPhone: '+79990000000',
-    serviceId: 'consult',
-    serviceName: 'Индивидуальная консультация',
+    serviceId: 'consult-online',
+    serviceName: 'Индивидуальная консультация (онлайн)',
     sessionDate: '2099-06-01',
     sessionTime: '10:00',
     sessionDatetime: '2099-06-01T10:00:00',
@@ -70,8 +70,8 @@ function bookingPayload(payment, overrides = {}) {
     customerName: 'Тестовый Клиент',
     customerPhone: '+79990000000',
     customerEmail: 'client@example.com',
-    serviceId: 'consult',
-    serviceName: 'Индивидуальная консультация',
+    serviceId: 'consult-online',
+    serviceName: 'Индивидуальная консультация (онлайн)',
     sessionDate: '2099-06-01',
     sessionTime: '10:00',
     sessionDatetime: '2099-06-01T10:00:00',
@@ -166,8 +166,8 @@ test('mock payment can be created and read back', async () => {
 test('create-payment ignores a tampered amount and uses the service price', async () => {
   const { response, body } = await createMockPayment({
     amount: 1,
-    serviceId: 'consult-2',
-    serviceName: 'Пакет 2 консультации',
+    serviceId: 'consult-offline',
+    serviceName: 'Индивидуальная консультация (очно)',
     sessionDate: '2099-06-20',
     sessionTime: '10:00',
     sessionDatetime: '2099-06-20T10:00:00'
@@ -175,8 +175,8 @@ test('create-payment ignores a tampered amount and uses the service price', asyn
 
   assert.equal(response.status, 200);
   const payment = await db.getPayment(body.paymentId);
-  assert.equal(payment.amount, 6500);
-  assert.equal(String(body.amount), '6500');
+  assert.equal(payment.amount, 3000);
+  assert.equal(String(body.amount), '3000');
 });
 
 test('payment details require a valid token', async () => {
@@ -260,6 +260,32 @@ test('an occupied individual slot cannot be double-booked', async () => {
   assert.equal(second.body.code, 'slot_taken');
 });
 
+test('group service allows several clients in the same slot', async () => {
+  const groupOverrides = {
+    serviceId: 'group-online',
+    serviceName: 'Групповое консультирование (онлайн)',
+    sessionDate: '2099-06-10',
+    sessionTime: '10:00',
+    sessionDatetime: '2099-06-10T10:00:00'
+  };
+
+  const first = await createMockPayment({ ...groupOverrides, customerEmail: 'g1@example.com', customerPhone: '+79990000001' });
+  const firstBooking = await request('POST', `/api/payments/${first.body.paymentId}/confirm-booking`, {
+    body: bookingPayload(first.body, { ...groupOverrides, customerEmail: 'g1@example.com', customerPhone: '+79990000001' })
+  });
+  assert.equal(firstBooking.status, 200);
+
+  const second = await createMockPayment({ ...groupOverrides, customerEmail: 'g2@example.com', customerPhone: '+79990000002' });
+  const secondBooking = await request('POST', `/api/payments/${second.body.paymentId}/confirm-booking`, {
+    body: bookingPayload(second.body, { ...groupOverrides, customerEmail: 'g2@example.com', customerPhone: '+79990000002' })
+  });
+  assert.equal(secondBooking.status, 200);
+
+  const rows = await db.getSessionsByRange({}, 200, 0);
+  const inSlot = rows.filter(session => session.session_datetime === groupOverrides.sessionDatetime);
+  assert.equal(inSlot.length, 2);
+});
+
 test('create-payment rejects a booking on a blocked date', async () => {
   const blockDate = '2099-06-05';
   await db.run('INSERT OR REPLACE INTO schedule_exceptions (date, reason) VALUES (?, ?)', [blockDate, 'test']);
@@ -278,7 +304,7 @@ test('create-payment rejects a booking on a blocked date', async () => {
 });
 
 test('schedule endpoint returns free slots', async () => {
-  const response = await request('GET', '/api/schedule?serviceId=consult&days=7');
+  const response = await request('GET', '/api/schedule?serviceId=consult-online&days=7');
   const body = await response.json();
 
   assert.equal(response.status, 200);
@@ -335,7 +361,7 @@ test('VK notification message includes booking details', async () => {
     sessionTime: '10:00',
     status: 'scheduled',
     paymentId: 'pay_test',
-    amount: 3500
+    amount: 3000
   });
 
   assert.match(message, /Имя клиента: Test User/);

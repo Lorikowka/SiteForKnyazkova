@@ -213,7 +213,7 @@ class BackendClient:
         data = await self.request("GET", "/api/schedule/admin/blocks")
         return data.get("blocks", []) if data and data.get("success") else []
 
-    async def schedule(self, service_id: str = "consult") -> dict[str, Any] | None:
+    async def schedule(self, service_id: str = "consult-online") -> dict[str, Any] | None:
         return await self.request("GET", f"/api/schedule?serviceId={urllib.parse.quote(service_id)}")
 
     async def update_session_status(self, session_id: int, status: str) -> bool:
@@ -549,7 +549,7 @@ def parse_add_command(text: str) -> dict[str, str] | None:
         "sessionTime": session_time,
         "clientName": parts[1],
         "clientPhone": parts[2],
-        "serviceId": parts[3] if len(parts) > 3 and parts[3] else "consult",
+        "serviceId": parts[3] if len(parts) > 3 and parts[3] else "consult-online",
     }
     if len(parts) > 4 and parts[4]:
         payload["comment"] = parts[4]
@@ -811,7 +811,7 @@ async def handle_command(peer_id: int, user_id: int, text: str) -> None:
             "/delete ID - то же, что /cancel\n\n"
             "Добавить запись:\n"
             "/add ДАТА ВРЕМЯ | Имя | Телефон | [услуга] | [комментарий]\n"
-            "Пример: /add 2026-07-15 10:00 | Иван | +79001234567 | consult\n\n"
+            "Пример: /add 2026-07-15 10:00 | Иван | +79001234567 | consult-online\n\n"
             "Выходные:\n"
             "/block YYYY-MM-DD [причина] — закрыть день\n"
             "/unblock YYYY-MM-DD — открыть день\n"

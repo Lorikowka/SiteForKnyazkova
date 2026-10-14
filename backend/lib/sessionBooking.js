@@ -1,3 +1,7 @@
+const { services = [] } = require('../config.json');
+
+const GROUP_SERVICE_IDS = new Set(services.filter(s => s.type === 'group').map(s => s.id));
+
 function run(rawDb, sql, params = []) {
   return new Promise((resolve, reject) => {
     rawDb.run(sql, params, function onRun(err) {
@@ -24,7 +28,7 @@ async function createSessionWithSlotGuard(db, data, options = {}) {
   if (db.ready) await db.ready;
 
   const rawDb = db.db;
-  const serviceType = options.serviceType || (data.service_id === 'group' ? 'group' : 'individual');
+  const serviceType = options.serviceType || (GROUP_SERVICE_IDS.has(data.service_id) ? 'group' : 'individual');
   const capacity = Math.max(1, Number(options.capacity) || 1);
   const activeStatuses = ['scheduled', 'completed'];
   const activePlaceholders = activeStatuses.map(() => '?').join(', ');
