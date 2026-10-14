@@ -1,52 +1,43 @@
-const db = require('../../database');
-const logger = require('../utils/logger');
-const { sendTelegramNotification, escapeTelegramHtml } = require('../services/notificationService');
+/**
+ * Отзывы с сайта.
+ */
+import db from '../db/index.js';
+import { escapeTelegramHtml, sendTelegramNotification } from '../services/notifications.js';
+import logger from '../utils/logger.js';
 
-const createReview = async (req, res) => {
-  try {
-    const { rating, name, contact, message } = req.body;
-    const sanitizedName = db.sanitizeInput(name);
-    const sanitizedContact = db.sanitizeInput(contact);
-    const sanitizedMessage = db.sanitizeInput(message);
+export async function createReview(request, reply) {
+  const { rating, name, contact, message } = request.body || {};
 
-    const review = await db.createReview({
-      rating: Number(rating),
-      name: sanitizedName,
-      contact: sanitizedContact,
-      message: sanitizedMessage,
-      source: 'site'
-    });
+  const sanitizedName = db.sanitizeInput(name);
+  const sanitizedContact = db.sanitizeInput(contact);
+  const sanitizedMessage = db.sanitizeInput(message);
 
-    const reviewId = review && typeof review.lastID === 'number' ? review.lastID : review?.id;
+  const result = db.createReview({
+    rating: Number(rating),
+    name: sanitizedName,
+    contact: sanitizedContact,
+    message: sanitizedMessage,
+    source: 'site'
+  });
 
-    await sendTelegramNotification([
-      '⭐ <b>Новый отзыв с сайта</b>',
-      '',
-      `ID: ${reviewId}`,
-      `Оценка: ${rating}/5`,
-      `Имя: ${escapeTelegramHtml(sanitizedName)}`,
-      `Контакт: ${escapeTelegramHtml(sanitizedContact)}`,
-      `Отзыв: ${escapeTelegramHtml(sanitizedMessage)}`
-    ].join('\n'));
+  const reviewId = result.lastInsertRowid;
 
-    logger.info(`Review created: #${reviewId}, rating: ${rating}`);
-    res.status(201).json({ success: true, id: reviewId });
-  } catch (error) {
-    logger.error(`Review error: ${error.message}`);
-    res.status(500).json({ success: false, error: 'Не удалось отправить отзыв' });
-  }
-};
+  await sendTelegramNotification([
+    '⭐ <b>Новый отзыв с сайта</b>',
+    '',
+    `ID: ${reviewId}`,
+    `Оценка: ${rating}/5`,
+    `Имя: ${escapeTelegramHtml(sanitizedName)}`,
+    `Контакт: ${escapeTelegramHtml(sanitizedContact)}`,
+    `Отзыв: ${escapeTelegramHtml(sanitizedMessage)}`
+  ].join('\n'));
 
-const getReviews = async (req, res) => {
-  try {
-    const limit = Math.min(parseInt(req.query.limit, 10) || 50, 100);
-    const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
-    const reviews = await db.getAllReviews(limit, offset);
-    res.json({ success: true, reviews });
-  } catch (error) {
-    logger.error(`Get reviews error: ${error.message}`);
-    res.status(500).json({ success: false, error: 'Не удалось получить отзывы' });
-  }
-};
+  logger.info(`Review created: #${reviewId}, rating: ${rating}`);
+  return reply.code(201).send({ success: true, id: Number(reviewId) });
+}
 
-module.exports = { createReview, getReviews };
+export async function getReviews(request, reply) {
+  const limit = Math.min(parseInt(request.query?.limit, 10) || 50, 100);
+  const offset = Math.max(parseInt(request.query?.offset, 10) || 0, 0);
+  return reply.send({ success: true, reviews: db.getAllReviews(limit, offset) });
+}

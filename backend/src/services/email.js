@@ -1,24 +1,43 @@
-const nodemailer = require('nodemailer');
-const config = require('../utils/config');
-const logger = require('../utils/logger');
-const { escapeHtml } = require('../../database');
+/**
+ * Отправка письма-подтверждения клиенту по SMTP.
+ *
+ * Транспорт создаётся один раз (пул соединений), а не на каждое письмо.
+ */
+import nodemailer from 'nodemailer';
 
-async function sendEmailConfirmation({ email, name, amount, serviceName, sessionDate, sessionTime, paymentId }) {
-  const { host, port, user, pass, from } = config.smtp;
-  
-  if (!user || !pass) {
+import config from '../config/index.js';
+import { escapeHtml } from '../lib/text.js';
+import logger from '../utils/logger.js';
+
+let transporter = null;
+
+function getTransporter() {
+  if (transporter) return transporter;
+
+  const { host, port, user, pass } = config.smtp;
+  if (!user || !pass) return null;
+
+  transporter = nodemailer.createTransport({
+    host,
+    port,
+    secure: port === 465,
+    auth: { user, pass },
+    pool: true,
+    maxConnections: 3
+  });
+  return transporter;
+}
+
+export async function sendEmailConfirmation({ email, name, amount, serviceName, sessionDate, sessionTime, paymentId }) {
+  const { from } = config.smtp;
+  const mailer = getTransporter();
+
+  if (!mailer) {
     logger.warn('SMTP не настроен. Email не отправлен.');
     return;
   }
 
   try {
-    const transporter = nodemailer.createTransport({
-      host,
-      port,
-      secure: port === 465,
-      auth: { user, pass }
-    });
-
     const htmlContent = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
         <h2 style="color: #2c7a55;">✅ Оплата прошла успешно!</h2>
@@ -56,7 +75,7 @@ async function sendEmailConfirmation({ email, name, amount, serviceName, session
       </div>
     `;
 
-    await transporter.sendMail({
+    await mailer.sendMail({
       from: `"Екатерина Князькова" <${from}>`,
       to: email,
       subject: '✅ Оплата принята — Консультация психолога',
@@ -68,5 +87,3 @@ async function sendEmailConfirmation({ email, name, amount, serviceName, session
     logger.error(`❌ Ошибка отправки email: ${error.message}`);
   }
 }
-
-module.exports = { sendEmailConfirmation };

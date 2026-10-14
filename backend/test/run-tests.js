@@ -4,13 +4,14 @@
  * Запуск: npm test
  * Тесты работают с временной базой данных (SQLITE_PATH), поэтому не затрагивают
  * рабочую data/payments.db.
+ *
+ * Окружение выставляется до импорта модулей приложения (динамический import),
+ * чтобы конфигурация успела прочитать нужные переменные.
  */
-
-const assert = require('node:assert/strict');
-const http = require('http');
-const path = require('path');
-const fs = require('fs');
-const os = require('os');
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 const TEST_DB = path.join(os.tmpdir(), `psixolog-test-${Date.now()}.db`);
 
@@ -26,17 +27,16 @@ process.env.VK_BOT_TOKEN = '';
 process.env.VK_NOTIFY_PEER_IDS = '';
 process.env.SITE_URL = 'http://localhost:1488';
 
-const app = require('../server');
-const db = require('../database');
-const { buildVkEventMessage } = require('../lib/vkNotifier');
+const { buildApp } = await import('../src/app.js');
+const { default: db } = await import('../src/db/index.js');
+const { buildVkEventMessage } = await import('../src/lib/vkNotifier.js');
 
 const tests = [];
 const test = (name, fn) => tests.push({ name, fn });
 
 const ADMIN_HEADERS = { 'Content-Type': 'application/json', 'X-API-Key': 'test-admin-key' };
 
-let server;
-let baseUrl;
+let baseUrl = '';
 
 function request(method, url, { body, headers } = {}) {
   return fetch(`${baseUrl}${url}`, {
@@ -373,36 +373,33 @@ test('VK notification message includes booking details', async () => {
 
 // —————————————————————————————— ЗАПУСК ——————————————————————————————
 
-(async () => {
-  await db.ready;
-  server = http.createServer(app);
-  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  baseUrl = `http://127.0.0.1:${server.address().port}`;
+const app = await buildApp();
+await app.listen({ port: 0, host: '127.0.0.1' });
+baseUrl = `http://127.0.0.1:${app.server.address().port}`;
 
-  let failed = 0;
-  for (const item of tests) {
-    try {
-      await item.fn();
-      console.log(`ok - ${item.name}`);
-    } catch (error) {
-      failed += 1;
-      console.error(`not ok - ${item.name}`);
-      console.error(error);
-    }
+let failed = 0;
+for (const item of tests) {
+  try {
+    await item.fn();
+    console.log(`ok - ${item.name}`);
+  } catch (error) {
+    failed += 1;
+    console.error(`not ok - ${item.name}`);
+    console.error(error);
   }
+}
 
-  await new Promise(resolve => server.close(resolve));
-  await db.close();
+await app.close();
+db.close();
 
-  // Удаляем временную базу.
-  for (const suffix of ['', '-wal', '-shm']) {
-    try {
-      fs.unlinkSync(TEST_DB + suffix);
-    } catch {
-      /* файла может не быть */
-    }
+// Удаляем временную базу.
+for (const suffix of ['', '-wal', '-shm']) {
+  try {
+    fs.unlinkSync(TEST_DB + suffix);
+  } catch {
+    /* файла может не быть */
   }
+}
 
-  console.log(`\n${tests.length - failed}/${tests.length} тестов пройдено`);
-  if (failed > 0) process.exitCode = 1;
-})();
+console.log(`\n${tests.length - failed}/${tests.length} тестов пройдено`);
+if (failed > 0) process.exitCode = 1;

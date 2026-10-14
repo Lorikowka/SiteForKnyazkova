@@ -1,3 +1,6 @@
+/**
+ * Отправка уведомлений во ВКонтакте напрямую через VK API.
+ */
 const VK_API_URL = 'https://api.vk.com/method/messages.send';
 
 const STATUS_LABELS = {
@@ -21,10 +24,10 @@ const EVENT_TITLES = {
   review_created: 'Новый отзыв'
 };
 
-function normalizePeerIds(value) {
+export function normalizePeerIds(value) {
   return String(value || '')
     .split(',')
-    .map(item => item.trim())
+    .map((item) => item.trim())
     .filter(Boolean);
 }
 
@@ -33,11 +36,12 @@ function cleanValue(value, fallback = '-') {
   return next || fallback;
 }
 
-function statusLabel(status) {
+export function statusLabel(status) {
   return STATUS_LABELS[status] || cleanValue(status);
 }
 
-function buildVkEventMessage(event = {}) {
+/** Формирует текст уведомления о событии записи/платежа. */
+export function buildVkEventMessage(event = {}) {
   const lines = [
     EVENT_TITLES[event.type] || 'Важное событие',
     '',
@@ -58,13 +62,14 @@ function buildVkEventMessage(event = {}) {
   return lines.join('\n');
 }
 
-function createVkNotifier({
+/** Создаёт нотификатор VK с заданными получателями. */
+export function createVkNotifier({
   token,
   peerIds,
   apiVersion = '5.199',
   logger = console,
   fetchImpl = fetch,
-  sanitize = value => value
+  sanitize = (value) => value
 } = {}) {
   const recipients = Array.isArray(peerIds) ? peerIds.filter(Boolean) : normalizePeerIds(peerIds);
 
@@ -121,10 +126,3 @@ function createVkNotifier({
     isConfigured: Boolean(token && recipients.length > 0)
   };
 }
-
-module.exports = {
-  createVkNotifier,
-  buildVkEventMessage,
-  normalizePeerIds,
-  statusLabel
-};

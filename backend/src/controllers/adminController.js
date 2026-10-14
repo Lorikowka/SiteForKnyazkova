@@ -1,100 +1,101 @@
-const db = require('../../database');
-const logger = require('../utils/logger');
-const config = require('../utils/config');
-const { verifyWebhookSignature } = require('../../lib/security');
-const { sendVkBookingNotification } = require('../services/vkService');
-const { sendTelegramNotification, escapeTelegramHtml } = require('../services/notificationService');
+/**
+ * Административные операции: вебхук ЮKassa и очистка базы.
+ */
+import config from '../config/index.js';
+import db from '../db/index.js';
+import { verifyWebhookSignature } from '../lib/security.js';
+import { escapeTelegramHtml, sendTelegramNotification, sendVkBookingNotification } from '../services/notifications.js';
+import logger from '../utils/logger.js';
 
 /** Удаляет отменённый платёж, если к нему не привязаны сеансы. */
-async function discardPaymentIfUnused(paymentId) {
-  const payment = await db.getPayment(paymentId);
+function discardPaymentIfUnused(paymentId) {
+  const payment = db.getPayment(paymentId);
   if (!payment) return { discarded: false, reason: 'not_found' };
   if (!['canceled', 'expired'].includes(payment.status)) return { discarded: false, reason: payment.status };
 
-  const sessions = await db.getSessionsByPaymentId(paymentId);
+  const sessions = db.getSessionsByPaymentId(paymentId);
   if (sessions.length > 0) return { discarded: false, reason: 'has_sessions' };
 
-  const result = await db.deletePayment(paymentId);
+  const result = db.deletePayment(paymentId);
   return { discarded: Boolean(result.changes) };
 }
 
 /** Обработчик вебхуков ЮKassa. */
-const handleWebhook = async (req, res) => {
-  try {
-    const event = req.body;
-    const object = event?.object;
-    if (!event?.event || !object) return res.status(400).send('Invalid event format');
+export async function handleWebhook(request, reply) {
+  const event = request.body;
+  const object = event?.object;
+  if (!event?.event || !object) return reply.code(400).send('Invalid event format');
 
-    const signature = req.headers['x-yookassa-signature'];
-    if (!verifyWebhookSignature({ body: req.rawBody || '', signature, secret: config.yookassa.webhookSecret, logger })) {
-      logger.warn('Отклонён вебхук с неверной подписью');
-      return res.status(401).send('Invalid signature');
-    }
-
-    const payment = await db.getPaymentByProviderId(object.id);
-    logger.info(`Вебхук: ${event.event} ${object.id}`);
-    if (!payment) return res.status(404).send('Payment not found');
-
-    if (event.event === 'payment.succeeded') {
-      if (payment.status === 'succeeded') return res.status(200).send('OK');
-
-      await db.updatePaymentStatus(payment.id, 'succeeded', object.paid_at);
-      await sendVkBookingNotification('payment_succeeded', {
-        payment: { ...payment, status: 'succeeded', amount: payment.amount || object.amount?.value },
-        status: 'pending_confirmation'
-      });
-      await sendTelegramNotification(
-        `✅ <b>Оплата получена!</b>\n\n💰 Сумма: ${escapeTelegramHtml(String(object.amount?.value ?? ''))} ₽\n🆔 ID: ${escapeTelegramHtml(object.id)}`
-      );
-    } else if (['payment.canceled', 'payment.expired'].includes(event.event)) {
-      if (['canceled', 'expired'].includes(payment.status)) return res.status(200).send('OK');
-
-      await db.updatePaymentStatus(payment.id, object.status);
-      await sendVkBookingNotification('payment_canceled', {
-        payment: { ...payment, status: object.status, amount: payment.amount || object.amount?.value },
-        status: object.status,
-        reason: object.cancellation_details?.reason || ''
-      });
-
-      const cleanup = await discardPaymentIfUnused(payment.id);
-      if (cleanup.discarded) logger.info(`Удалён неиспользованный платёж: ${payment.id}`);
-
-      await sendTelegramNotification(
-        `❌ <b>Оплата отменена!</b>\n\n🆔 ID: ${escapeTelegramHtml(object.id)}\n📝 Причина: ${escapeTelegramHtml(object.cancellation_details?.reason || 'не указана')}`
-      );
-    }
-
-    res.status(200).send('OK');
-  } catch (error) {
-    logger.error(`Webhook error: ${error.message}`);
-    res.status(500).send('Webhook error');
+  const signature = request.headers['x-yookassa-signature'];
+  const valid = verifyWebhookSignature({
+    body: request.rawBody || '',
+    signature,
+    secret: config.yookassa.webhookSecret,
+    logger
+  });
+  if (!valid) {
+    logger.warn('Отклонён вебхук с неверной подписью');
+    return reply.code(401).send('Invalid signature');
   }
-};
+
+  const payment = db.getPaymentByProviderId(object.id);
+  logger.info(`Вебхук: ${event.event} ${object.id}`);
+  if (!payment) return reply.code(404).send('Payment not found');
+
+  if (event.event === 'payment.succeeded') {
+    if (payment.status === 'succeeded') return reply.code(200).send('OK');
+
+    db.updatePaymentStatus(payment.id, 'succeeded', object.paid_at);
+    await sendVkBookingNotification('payment_succeeded', {
+      payment: { ...payment, status: 'succeeded', amount: payment.amount || object.amount?.value },
+      status: 'pending_confirmation'
+    });
+    await sendTelegramNotification(
+      `✅ <b>Оплата получена!</b>\n\n💰 Сумма: ${escapeTelegramHtml(String(object.amount?.value ?? ''))} ₽\n🆔 ID: ${escapeTelegramHtml(object.id)}`
+    );
+  } else if (['payment.canceled', 'payment.expired'].includes(event.event)) {
+    if (['canceled', 'expired'].includes(payment.status)) return reply.code(200).send('OK');
+
+    db.updatePaymentStatus(payment.id, object.status);
+    await sendVkBookingNotification('payment_canceled', {
+      payment: { ...payment, status: object.status, amount: payment.amount || object.amount?.value },
+      status: object.status,
+      reason: object.cancellation_details?.reason || ''
+    });
+
+    const cleanup = discardPaymentIfUnused(payment.id);
+    if (cleanup.discarded) logger.info(`Удалён неиспользованный платёж: ${payment.id}`);
+
+    await sendTelegramNotification(
+      `❌ <b>Оплата отменена!</b>\n\n🆔 ID: ${escapeTelegramHtml(object.id)}\n📝 Причина: ${escapeTelegramHtml(object.cancellation_details?.reason || 'не указана')}`
+    );
+  }
+
+  return reply.code(200).send('OK');
+}
 
 /** Очистка базы: конкретный платёж или все данные (с явным подтверждением). */
-const cleanupDatabase = async (req, res) => {
-  try {
-    const { scope = 'all', paymentId, confirm } = req.body;
+export async function cleanupDatabase(request, reply) {
+  const { scope = 'all', paymentId, confirm } = request.body || {};
 
-    if (scope === 'payment') {
-      if (!paymentId) return res.status(400).json({ success: false, error: 'Укажите paymentId' });
-      const deletedSessions = await db.deleteSessionsByPaymentId(paymentId);
-      const deletedPayment = await db.deletePayment(paymentId);
-      return res.json({ success: true, scope, deletedPayment: deletedPayment.changes, deletedSessions: deletedSessions.changes });
-    }
-
-    if (confirm !== 'DELETE_ALL') {
-      return res.status(400).json({ success: false, error: 'Передайте confirm=DELETE_ALL' });
-    }
-
-    const deletedSessions = await db.deleteAllSessions();
-    const deletedPayments = await db.deleteAllPayments();
-    logger.warn(`Полная очистка БД: sessions=${deletedSessions.changes}, payments=${deletedPayments.changes}`);
-    res.json({ success: true, scope: 'all', deletedSessions: deletedSessions.changes, deletedPayments: deletedPayments.changes });
-  } catch (error) {
-    logger.error(`Cleanup error: ${error.message}`);
-    res.status(500).json({ success: false, error: 'Не удалось очистить базу' });
+  if (scope === 'payment') {
+    if (!paymentId) return reply.code(400).send({ success: false, error: 'Укажите paymentId' });
+    const deletedSessions = db.deleteSessionsByPaymentId(paymentId);
+    const deletedPayment = db.deletePayment(paymentId);
+    return reply.send({
+      success: true,
+      scope,
+      deletedPayment: deletedPayment.changes,
+      deletedSessions: deletedSessions.changes
+    });
   }
-};
 
-module.exports = { handleWebhook, cleanupDatabase };
+  if (confirm !== 'DELETE_ALL') {
+    return reply.code(400).send({ success: false, error: 'Передайте confirm=DELETE_ALL' });
+  }
+
+  const deletedSessions = db.deleteAllSessions();
+  const deletedPayments = db.deleteAllPayments();
+  logger.warn(`Полная очистка БД: sessions=${deletedSessions.changes}, payments=${deletedPayments.changes}`);
+  return reply.send({ success: true, scope: 'all', deletedSessions: deletedSessions.changes, deletedPayments: deletedPayments.changes });
+}

@@ -1,111 +1,121 @@
-const db = require('../../database');
-const logger = require('../utils/logger');
-const config = require('../utils/config');
-const { sendVkBookingNotification } = require('../services/vkService');
-const { sendEmailConfirmation } = require('../services/emailService');
-const { createSessionWithSlotGuard } = require('../../lib/sessionBooking');
+/**
+ * Записи на сеансы: список, создание, статусы, подтверждение после оплаты,
+ * отмена клиентом и напоминания.
+ */
+import config from '../config/index.js';
+import db from '../db/index.js';
+import { getServiceConfig, getStoredPaymentMetadata, hasValidPaymentToken } from '../domain/catalog.js';
+import { getDuplicateGroupBooking, getSlotAvailability } from '../domain/slots.js';
+import { createSessionWithSlotGuard } from '../lib/sessionBooking.js';
+import { sendEmailConfirmation } from '../services/email.js';
+import { sendVkBookingNotification } from '../services/notifications.js';
+import { badRequest, conflict, forbidden, notFound } from '../utils/errors.js';
+import logger from '../utils/logger.js';
 
-const { getServiceConfig, getStoredPaymentMetadata } = require('./scheduleController');
-const { getSlotAvailability, getDuplicateGroupBooking, hasValidPaymentToken } = require('./paymentController');
-
-const getSessions = async (req, res) => {
-  try {
-    const { limit = 50, past = 'false', page = 1, from = '', to = '', status = '' } = req.query;
-    const isPast = past === 'true';
-    const safeLimit = Math.min(parseInt(limit, 10) || 50, 200);
-    const safePage = Math.max(parseInt(page, 10) || 1, 1);
-    const offset = (safePage - 1) * safeLimit;
-
-    const filters = {
-      past: from || to ? null : isPast,
-      from: String(from || '').slice(0, 40),
-      to: String(to || '').slice(0, 40),
-      status: ['scheduled', 'completed', 'cancelled'].includes(status) ? status : ''
-    };
-
-    const [sessions, total] = await Promise.all([
-      db.getSessionsByRange(filters, safeLimit, offset),
-      db.countSessionsByRange(filters)
-    ]);
-
-    res.json({
-      success: true,
-      sessions,
-      pagination: { page: safePage, limit: safeLimit, total, totalPages: Math.max(Math.ceil(total / safeLimit), 1) }
-    });
-  } catch (error) {
-    logger.error(`Get sessions error: ${error.message}`);
-    res.status(500).json({ success: false, error: 'Не удалось получить список записей' });
+/** Преобразует ошибки гонки за слот в HTTP 409. */
+function rethrowSlotError(error, messages = {}) {
+  if (error.code === 'SLOT_TAKEN' || error.code === 'SLOT_FULL') {
+    return conflict(messages.taken || 'Слот занят', error.code);
   }
-};
-
-const updateSessionStatus = async (req, res) => {
-  try {
-    const sessionId = parseInt(req.params.id, 10);
-    const { status } = req.body;
-    const session = await db.getSession(sessionId);
-    if (!session) return res.status(404).json({ success: false, error: 'Сеанс не найден' });
-
-    await db.updateSessionStatus(sessionId, status);
-    await sendVkBookingNotification('booking_status_changed', {
-      payment: session.payment_id ? await db.getPayment(session.payment_id) : {},
-      session: { ...session, status },
-      status
-    });
-
-    logger.info(`Статус записи #${sessionId}: ${session.status} -> ${status}`);
-    res.json({ success: true, message: 'Статус обновлён', sessionId, status });
-  } catch (error) {
-    logger.error(`Update session status error: ${error.message}`);
-    res.status(500).json({ success: false, error: 'Не удалось обновить статус' });
+  if (error.code === 'DUPLICATE_GROUP_BOOKING') {
+    return conflict(messages.duplicate || 'Клиент уже записан на этот слот', error.code);
   }
-};
+  return error;
+}
+
+export async function getSessions(request, reply) {
+  const { limit = 50, past = 'false', page = 1, from = '', to = '', status = '' } = request.query || {};
+  const isPast = past === 'true';
+  const safeLimit = Math.min(parseInt(limit, 10) || 50, 200);
+  const safePage = Math.max(parseInt(page, 10) || 1, 1);
+  const offset = (safePage - 1) * safeLimit;
+
+  const filters = {
+    past: from || to ? null : isPast,
+    from: String(from || '').slice(0, 40),
+    to: String(to || '').slice(0, 40),
+    status: ['scheduled', 'completed', 'cancelled'].includes(status) ? status : ''
+  };
+
+  const sessions = db.getSessionsByRange(filters, safeLimit, offset);
+  const total = db.countSessionsByRange(filters);
+
+  return reply.send({
+    success: true,
+    sessions,
+    pagination: { page: safePage, limit: safeLimit, total, totalPages: Math.max(Math.ceil(total / safeLimit), 1) }
+  });
+}
+
+export async function updateSessionStatus(request, reply) {
+  const sessionId = parseInt(request.params.id, 10);
+  const { status } = request.body || {};
+
+  const session = db.getSession(sessionId);
+  if (!session) throw notFound('Сеанс не найден');
+
+  db.updateSessionStatus(sessionId, status);
+  await sendVkBookingNotification('booking_status_changed', {
+    payment: session.payment_id ? db.getPayment(session.payment_id) : {},
+    session: { ...session, status },
+    status
+  });
+
+  logger.info(`Статус записи #${sessionId}: ${session.status} -> ${status}`);
+  return reply.send({ success: true, message: 'Статус обновлён', sessionId, status });
+}
 
 /** Мягкая отмена записи администратором (статус → cancelled). */
-const cancelSession = async (req, res) => {
-  try {
-    const sessionId = parseInt(req.params.id, 10);
-    const session = await db.getSession(sessionId);
-    if (!session) return res.status(404).json({ success: false, error: 'Сеанс не найден' });
+export async function cancelSession(request, reply) {
+  const sessionId = parseInt(request.params.id, 10);
+  const session = db.getSession(sessionId);
+  if (!session) throw notFound('Сеанс не найден');
 
-    await db.updateSessionStatus(sessionId, 'cancelled');
-    await sendVkBookingNotification('booking_cancelled', {
-      payment: session.payment_id ? await db.getPayment(session.payment_id) : {},
-      session: { ...session, status: 'cancelled' },
-      status: 'cancelled'
-    });
-    if (config.app.mockMode && session.payment_id) await db.updatePaymentStatus(session.payment_id, 'canceled');
+  db.updateSessionStatus(sessionId, 'cancelled');
+  await sendVkBookingNotification('booking_cancelled', {
+    payment: session.payment_id ? db.getPayment(session.payment_id) : {},
+    session: { ...session, status: 'cancelled' },
+    status: 'cancelled'
+  });
+  if (config.app.mockMode && session.payment_id) db.updatePaymentStatus(session.payment_id, 'canceled');
 
-    logger.info(`Запись #${sessionId} отменена администратором`);
-    res.json({ success: true, message: 'Сеанс отменён' });
-  } catch (error) {
-    logger.error(`Cancel session error: ${error.message}`);
-    res.status(500).json({ success: false, error: 'Не удалось отменить запись' });
-  }
-};
+  logger.info(`Запись #${sessionId} отменена администратором`);
+  return reply.send({ success: true, message: 'Сеанс отменён' });
+}
 
 /** Создание записи администратором (без оплаты). */
-const createSession = async (req, res) => {
+export async function createSession(request, reply) {
+  const {
+    clientName,
+    clientPhone,
+    clientEmail,
+    serviceId,
+    serviceName,
+    sessionDate,
+    sessionTime,
+    sessionDatetime,
+    amount,
+    comment
+  } = request.body || {};
+
+  if (!clientName || !clientPhone || !sessionDate || !sessionTime) {
+    throw badRequest('Нужны: clientName, clientPhone, sessionDate, sessionTime');
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(sessionDate) || !/^\d{2}:\d{2}$/.test(sessionTime)) {
+    throw badRequest('Формат даты YYYY-MM-DD, времени HH:MM');
+  }
+
+  if (db.getScheduleException(sessionDate)) {
+    throw conflict('Эта дата закрыта для записи', 'date_blocked');
+  }
+
+  const serviceConfig = getServiceConfig(serviceId, serviceName);
+  const resolvedServiceName = serviceName || serviceConfig.name;
+  const datetime = sessionDatetime || `${sessionDate}T${sessionTime}:00`;
+
+  let createdSession;
   try {
-    const { clientName, clientPhone, clientEmail, serviceId, serviceName, sessionDate, sessionTime, sessionDatetime, amount, comment } = req.body;
-
-    if (!clientName || !clientPhone || !sessionDate || !sessionTime) {
-      return res.status(400).json({ success: false, error: 'Нужны: clientName, clientPhone, sessionDate, sessionTime' });
-    }
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(sessionDate) || !/^\d{2}:\d{2}$/.test(sessionTime)) {
-      return res.status(400).json({ success: false, error: 'Формат даты YYYY-MM-DD, времени HH:MM' });
-    }
-
-    const blocked = await db.getScheduleException(sessionDate);
-    if (blocked) {
-      return res.status(409).json({ success: false, error: 'Эта дата закрыта для записи', code: 'date_blocked' });
-    }
-
-    const serviceConfig = getServiceConfig(serviceId, serviceName);
-    const resolvedServiceName = serviceName || serviceConfig.name;
-    const datetime = sessionDatetime || `${sessionDate}T${sessionTime}:00`;
-
-    const createdSession = await createSessionWithSlotGuard(db, {
+    createdSession = createSessionWithSlotGuard({
       payment_id: null,
       client_name: db.sanitizeInput(clientName),
       client_phone: db.sanitizeInput(clientPhone),
@@ -119,106 +129,98 @@ const createSession = async (req, res) => {
       comment: comment ? db.sanitizeInput(comment) : null,
       status: 'scheduled'
     }, { serviceType: serviceConfig.type, capacity: serviceConfig.capacity });
-
-    const session = await db.getSession(createdSession.id);
-    await sendVkBookingNotification('booking_created', { payment: {}, session, status: 'scheduled' });
-    logger.info(`Запись #${createdSession.id} создана через API: ${datetime}`);
-    res.status(201).json({ success: true, sessionId: createdSession.id, session });
   } catch (error) {
-    if (error.code === 'SLOT_TAKEN' || error.code === 'SLOT_FULL') {
-      return res.status(409).json({ success: false, error: 'Слот занят', code: error.code });
-    }
-    if (error.code === 'DUPLICATE_GROUP_BOOKING') {
-      return res.status(409).json({ success: false, error: 'Клиент уже записан на этот слот', code: error.code });
-    }
-    logger.error(`Create session error: ${error.message}`);
-    res.status(500).json({ success: false, error: 'Не удалось создать запись' });
+    throw rethrowSlotError(error);
   }
-};
+
+  const session = db.getSession(createdSession.id);
+  await sendVkBookingNotification('booking_created', { payment: {}, session, status: 'scheduled' });
+  logger.info(`Запись #${createdSession.id} создана через API: ${datetime}`);
+  return reply.code(201).send({ success: true, sessionId: createdSession.id, session });
+}
 
 /**
  * Подтверждение записи после оплаты: создаёт сеанс, привязанный к платежу.
  *
  * Идемпотентно: повторный вызов для того же платежа возвращает уже созданную
  * запись. Поля записи берутся из тела запроса, а если их там нет — из
- * метаданных платежа (сохранённых при создании платежа).
+ * метаданных платежа.
  */
-const confirmBooking = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const payment = await db.getPayment(id);
-    if (!payment) return res.status(404).json({ success: false, error: 'Платёж не найден' });
+export async function confirmBooking(request, reply) {
+  const { id } = request.params;
+  const payment = db.getPayment(id);
+  if (!payment) throw notFound('Платёж не найден');
 
-    if (!hasValidPaymentToken(payment, req.body?.token)) {
-      return res.status(403).json({ success: false, error: 'Неверный токен' });
+  if (!hasValidPaymentToken(payment, request.body?.token)) throw forbidden('Неверный токен');
+  if (!['succeeded', 'waiting_for_capture'].includes(payment.status)) {
+    throw conflict('Запись возможна только после оплаты');
+  }
+
+  const existingSessions = db.getSessionsByPaymentId(id);
+  if (existingSessions.length > 0) {
+    return reply.send({ success: true, alreadyConfirmed: true, sessionId: existingSessions[0].id });
+  }
+
+  const stored = getStoredPaymentMetadata(payment);
+  const pick = (...values) => {
+    for (const value of values) {
+      const text = value == null ? '' : String(value).trim();
+      if (text) return text;
     }
-    if (!['succeeded', 'waiting_for_capture'].includes(payment.status)) {
-      return res.status(409).json({ success: false, error: 'Запись возможна только после оплаты' });
-    }
+    return '';
+  };
 
-    const existingSessions = await db.getSessionsByPaymentId(id);
-    if (existingSessions.length > 0) {
-      return res.json({ success: true, alreadyConfirmed: true, sessionId: existingSessions[0].id });
-    }
+  const customerName = db.sanitizeInput(pick(request.body?.customerName, payment.customer_name, stored.customerName));
+  const customerPhone = db.sanitizeInput(pick(request.body?.customerPhone, payment.customer_phone, stored.customerPhone));
+  const customerEmail = db.sanitizeInput(pick(request.body?.customerEmail, payment.customer_email, stored.customerEmail));
+  const serviceId = pick(request.body?.serviceId, stored.serviceId, payment.service_id);
+  const serviceName = pick(request.body?.serviceName, payment.service_name, stored.serviceName);
+  const sessionDate = pick(request.body?.sessionDate, stored.sessionDate);
+  const sessionTime = pick(request.body?.sessionTime, stored.sessionTime);
+  const sessionDatetime = pick(
+    request.body?.sessionDatetime,
+    stored.sessionDatetime,
+    sessionDate && sessionTime ? `${sessionDate}T${sessionTime}:00` : ''
+  );
+  const comment = db.sanitizeInput(pick(request.body?.comment, stored.comment, payment.comment));
 
-    const stored = getStoredPaymentMetadata(payment);
-    const pick = (...values) => {
-      for (const value of values) {
-        const text = value == null ? '' : String(value).trim();
-        if (text) return text;
-      }
-      return '';
-    };
+  if (!customerName || !customerPhone || !serviceName || !sessionDate || !sessionTime || !sessionDatetime) {
+    return reply.code(400).send({ success: false, error: 'Не хватает данных для записи', code: 'missing_booking_data' });
+  }
 
-    const customerName = db.sanitizeInput(pick(req.body?.customerName, payment.customer_name, stored.customerName));
-    const customerPhone = db.sanitizeInput(pick(req.body?.customerPhone, payment.customer_phone, stored.customerPhone));
-    const customerEmail = db.sanitizeInput(pick(req.body?.customerEmail, payment.customer_email, stored.customerEmail));
-    const serviceId = pick(req.body?.serviceId, stored.serviceId, payment.service_id);
-    const serviceName = pick(req.body?.serviceName, payment.service_name, stored.serviceName);
-    const sessionDate = pick(req.body?.sessionDate, stored.sessionDate);
-    const sessionTime = pick(req.body?.sessionTime, stored.sessionTime);
-    const sessionDatetime = pick(
-      req.body?.sessionDatetime,
-      stored.sessionDatetime,
-      sessionDate && sessionTime ? `${sessionDate}T${sessionTime}:00` : ''
+  if (getDuplicateGroupBooking({
+    serviceId, serviceName, sessionDate, sessionTime, customerEmail, customerPhone, excludePaymentId: id
+  })) {
+    throw conflict('Вы уже записаны на этот групповой тренинг.', 'duplicate_group_booking');
+  }
+
+  const availability = getSlotAvailability({ serviceId, serviceName, sessionDate, sessionTime, excludePaymentId: id });
+  if (!availability.available) {
+    throw conflict(
+      availability.code === 'group_full'
+        ? 'На этот групповой тренинг мест больше нет.'
+        : 'Выбранное время уже занято.',
+      availability.code
     );
-    const comment = db.sanitizeInput(pick(req.body?.comment, stored.comment, payment.comment));
+  }
 
-    if (!customerName || !customerPhone || !serviceName || !sessionDate || !sessionTime || !sessionDatetime) {
-      return res.status(400).json({ success: false, error: 'Не хватает данных для записи', code: 'missing_booking_data' });
-    }
+  const metadata = {
+    ...stored,
+    serviceId,
+    customerEmail,
+    customerName,
+    customerPhone,
+    serviceName,
+    sessionDate,
+    sessionTime,
+    sessionDatetime,
+    comment
+  };
+  const serviceConfig = getServiceConfig(serviceId, serviceName);
 
-    const duplicate = await getDuplicateGroupBooking({
-      serviceId, serviceName, sessionDate, sessionTime, customerEmail, customerPhone, excludePaymentId: id
-    });
-    if (duplicate) {
-      return res.status(409).json({ success: false, error: 'Вы уже записаны на этот групповой тренинг.', code: 'duplicate_group_booking' });
-    }
-
-    const availability = await getSlotAvailability({ serviceId, serviceName, sessionDate, sessionTime, excludePaymentId: id });
-    if (!availability.available) {
-      return res.status(409).json({
-        success: false,
-        error: availability.code === 'group_full' ? 'На этот групповой тренинг мест больше нет.' : 'Выбранное время уже занято.',
-        code: availability.code
-      });
-    }
-
-    const metadata = {
-      ...stored,
-      serviceId,
-      customerEmail,
-      customerName,
-      customerPhone,
-      serviceName,
-      sessionDate,
-      sessionTime,
-      sessionDatetime,
-      comment
-    };
-    const serviceConfig = getServiceConfig(serviceId, serviceName);
-
-    const createdSession = await createSessionWithSlotGuard(db, {
+  let createdSession;
+  try {
+    createdSession = createSessionWithSlotGuard({
       payment_id: id,
       client_name: customerName,
       client_phone: customerPhone,
@@ -244,113 +246,86 @@ const confirmBooking = async (req, res) => {
         metadata
       }
     });
-
-    if (customerEmail) {
-      await sendEmailConfirmation({
-        email: customerEmail,
-        name: customerName,
-        amount: payment.amount,
-        serviceName,
-        sessionDate,
-        sessionTime,
-        paymentId: id
-      });
-    }
-
-    logger.info(`Запись подтверждена: ${sessionDatetime} (платёж ${id})`);
-    await sendVkBookingNotification('booking_created', {
-      payment: { ...payment, metadata },
-      session: {
-        ...createdSession,
-        client_name: customerName,
-        client_phone: customerPhone,
-        client_email: customerEmail || null,
-        service_id: serviceId || null,
-        service_name: serviceName,
-        session_date: sessionDate,
-        session_time: sessionTime,
-        session_datetime: sessionDatetime,
-        amount: payment.amount,
-        comment: comment || null,
-        status: 'scheduled'
-      },
-      status: 'scheduled'
-    });
-
-    res.json({ success: true, sessionId: createdSession.id });
   } catch (error) {
-    logger.error(`Confirm booking error: ${error.message}`);
-    res.status(500).json({ success: false, error: 'Не удалось подтвердить запись' });
+    throw rethrowSlotError(error, {
+      taken: 'Выбранное время уже занято.',
+      duplicate: 'Вы уже записаны на этот групповой тренинг.'
+    });
   }
-};
+
+  if (customerEmail) {
+    await sendEmailConfirmation({
+      email: customerEmail,
+      name: customerName,
+      amount: payment.amount,
+      serviceName,
+      sessionDate,
+      sessionTime,
+      paymentId: id
+    });
+  }
+
+  logger.info(`Запись подтверждена: ${sessionDatetime} (платёж ${id})`);
+  await sendVkBookingNotification('booking_created', {
+    payment: { ...payment, metadata },
+    session: {
+      ...createdSession,
+      client_name: customerName,
+      client_phone: customerPhone,
+      client_email: customerEmail || null,
+      service_id: serviceId || null,
+      service_name: serviceName,
+      session_date: sessionDate,
+      session_time: sessionTime,
+      session_datetime: sessionDatetime,
+      amount: payment.amount,
+      comment: comment || null,
+      status: 'scheduled'
+    },
+    status: 'scheduled'
+  });
+
+  return reply.send({ success: true, sessionId: createdSession.id });
+}
 
 /** Отмена записи самим клиентом по одноразовому токену отмены. */
-const cancelBookingByClient = async (req, res) => {
-  try {
-    const { paymentId, token, reason } = req.body;
-    const payment = await db.getPayment(paymentId);
-    if (!payment) return res.status(404).json({ success: false, error: 'Платёж не найден' });
+export async function cancelBookingByClient(request, reply) {
+  const { paymentId, token, reason } = request.body || {};
+  const payment = db.getPayment(paymentId);
+  if (!payment) throw notFound('Платёж не найден');
 
-    const metadata = getStoredPaymentMetadata(payment);
-    if (!metadata.cancelToken || metadata.cancelToken !== token) {
-      return res.status(403).json({ success: false, error: 'Доступ запрещён' });
-    }
+  const metadata = getStoredPaymentMetadata(payment);
+  if (!metadata.cancelToken || metadata.cancelToken !== token) throw forbidden('Доступ запрещён');
 
-    const sessions = await db.getSessionsByPaymentId(paymentId);
-    if (!sessions || sessions.length === 0) {
-      return res.status(404).json({ success: false, error: 'Запись не найдена' });
-    }
+  const sessions = db.getSessionsByPaymentId(paymentId);
+  if (!sessions || sessions.length === 0) throw notFound('Запись не найдена');
 
-    for (const session of sessions) {
-      if (['cancelled', 'completed'].includes(session.status)) continue;
-      await db.updateSessionStatus(session.id, 'cancelled');
-      await sendVkBookingNotification('booking_cancelled', {
-        payment: { ...payment, status: config.app.mockMode ? 'canceled' : payment.status },
-        session: { ...session, status: 'cancelled' },
-        status: 'cancelled',
-        reason: db.sanitizeInput(reason || '')
-      });
-    }
-
-    if (config.app.mockMode) await db.updatePaymentStatus(paymentId, 'canceled');
-    logger.info(`Запись отменена клиентом: ${paymentId}`);
-    res.json({ success: true, message: 'Запись отменена' });
-  } catch (error) {
-    logger.error(`Cancel booking by client error: ${error.message}`);
-    res.status(500).json({ success: false, error: 'Не удалось отменить запись' });
+  for (const session of sessions) {
+    if (['cancelled', 'completed'].includes(session.status)) continue;
+    db.updateSessionStatus(session.id, 'cancelled');
+    await sendVkBookingNotification('booking_cancelled', {
+      payment: { ...payment, status: config.app.mockMode ? 'canceled' : payment.status },
+      session: { ...session, status: 'cancelled' },
+      status: 'cancelled',
+      reason: db.sanitizeInput(reason || '')
+    });
   }
-};
 
-const getRemindersDue = async (req, res) => {
-  try {
-    const sessions = await db.getSessionsForReminder();
-    res.json({ success: true, sessions, total: sessions.length });
-  } catch (error) {
-    logger.error(`Get reminders error: ${error.message}`);
-    res.status(500).json({ success: false, error: 'Не удалось получить напоминания' });
-  }
-};
+  if (config.app.mockMode) db.updatePaymentStatus(paymentId, 'canceled');
+  logger.info(`Запись отменена клиентом: ${paymentId}`);
+  return reply.send({ success: true, message: 'Запись отменена' });
+}
 
-const markReminderSent = async (req, res) => {
-  try {
-    const sessionId = parseInt(req.params.id, 10);
-    const session = await db.getSession(sessionId);
-    if (!session) return res.status(404).json({ success: false, error: 'Сеанс не найден' });
-    await db.markReminderSent(sessionId);
-    res.json({ success: true, message: 'Напоминание отмечено', sessionId });
-  } catch (error) {
-    logger.error(`Mark reminder sent error: ${error.message}`);
-    res.status(500).json({ success: false, error: 'Не удалось отметить напоминание' });
-  }
-};
+export async function getRemindersDue(request, reply) {
+  const sessions = db.getSessionsForReminder();
+  return reply.send({ success: true, sessions, total: sessions.length });
+}
 
-module.exports = {
-  getSessions,
-  createSession,
-  updateSessionStatus,
-  cancelSession,
-  confirmBooking,
-  cancelBookingByClient,
-  getRemindersDue,
-  markReminderSent
-};
+export async function markReminderSent(request, reply) {
+  const sessionId = parseInt(request.params.id, 10);
+  const session = db.getSession(sessionId);
+  if (!session) throw notFound('Сеанс не найден');
+
+  db.markReminderSent(sessionId);
+  return reply.send({ success: true, message: 'Напоминание отмечено', sessionId });
+}

@@ -7,9 +7,9 @@
  * Использование:
  *   npm run security:check
  */
-
-const fs = require('fs');
-const path = require('path');
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const colors = {
   reset: '\x1b[0m',
@@ -30,8 +30,8 @@ const log = {
 
 const results = { passed: [], warnings: [], errors: [] };
 
-const BACKEND_DIR = __dirname;
-const ROOT_DIR = path.join(__dirname, '..');
+const BACKEND_DIR = path.dirname(fileURLToPath(import.meta.url));
+const ROOT_DIR = path.join(BACKEND_DIR, '..');
 const FRONTEND_DIR = path.join(ROOT_DIR, 'frontend');
 
 /** Рекурсивно собирает файлы с нужными расширениями. */
@@ -97,7 +97,7 @@ function checkRequiredFiles() {
 
   const required = [
     { file: path.join(BACKEND_DIR, 'server.js'), desc: 'Backend-сервер' },
-    { file: path.join(BACKEND_DIR, 'database.js'), desc: 'Модуль БД' },
+    { file: path.join(BACKEND_DIR, 'src', 'db', 'index.js'), desc: 'Модуль БД' },
     { file: path.join(BACKEND_DIR, 'package.json'), desc: 'Зависимости' },
     { file: path.join(ROOT_DIR, '.env.example'), desc: 'Пример .env' },
     { file: path.join(ROOT_DIR, '.gitignore'), desc: 'Git ignore' }
@@ -131,9 +131,9 @@ function checkPackageJson() {
   const dependencies = { ...packageJson.dependencies, ...packageJson.devDependencies };
 
   const securityPackages = {
-    helmet: 'Security headers',
-    'express-rate-limit': 'Rate limiting',
-    'express-validator': 'Валидация данных',
+    '@fastify/helmet': 'Security headers',
+    '@fastify/rate-limit': 'Rate limiting',
+    zod: 'Валидация данных',
     dotenv: 'Переменные окружения'
   };
 
@@ -167,15 +167,15 @@ function checkBackendSecurity() {
   const code = readAll(backendFiles);
 
   const checks = [
-    { pattern: /helmet\(/, desc: 'Helmet (security headers)' },
-    { pattern: /cors\(/, desc: 'CORS' },
+    { pattern: /register\(helmet|@fastify\/helmet/, desc: 'Helmet (security headers)' },
+    { pattern: /register\(cors|@fastify\/cors/, desc: 'CORS' },
     { pattern: /rateLimit|RateLimit|Limiter/, desc: 'Rate limiting' },
-    { pattern: /express-validator/, desc: 'Валидация данных' },
+    { pattern: /from ['"]zod['"]|safeParse/, desc: 'Валидация данных' },
     { pattern: /process\.env/, desc: 'Использование переменных окружения' },
     { pattern: /YOOKASSA_SECRET_KEY/, desc: 'Ключ ЮKassa' },
     { pattern: /createHmac|hmac|signature/i, desc: 'Проверка подписи вебхука' },
     { pattern: /sanitizeInput|sanitize/, desc: 'Санитизация данных' },
-    { pattern: /helmet\(|frameSrc|X-Frame-Options/, desc: 'Защита от clickjacking' }
+    { pattern: /contentSecurityPolicy|frameSrc|X-Frame-Options/, desc: 'Защита от clickjacking' }
   ];
 
   for (const { pattern, desc } of checks) {

@@ -1,35 +1,32 @@
-const { services = [] } = require('./config.json');
+/**
+ * Миграции схемы БД.
+ *
+ * Идентификаторы и SQL миграций не меняются относительно предыдущих версий,
+ * поэтому существующие базы обновляются без потери данных. Каждая миграция
+ * применяется в транзакции и ровно один раз (журнал в `schema_migrations`).
+ */
+import fs from 'node:fs';
+import path from 'node:path';
 
-function run(db, sql, params = []) {
-  return new Promise((resolve, reject) => {
-    db.run(sql, params, function onRun(err) {
-      if (err) reject(err);
-      else resolve(this);
-    });
-  });
-}
+import { BACKEND_ROOT } from '../config/env.js';
+import { all, run, sqlite } from './connection.js';
 
-function all(db, sql, params = []) {
-  return new Promise((resolve, reject) => {
-    db.all(sql, params, (err, rows) => {
-      if (err) reject(err);
-      else resolve(rows);
-    });
-  });
-}
+const { services = [] } = JSON.parse(
+  fs.readFileSync(path.join(BACKEND_ROOT, 'config.json'), 'utf8')
+);
 
-async function ensureColumn(db, table, column, definition) {
-  const columns = await all(db, `PRAGMA table_info(${table})`);
-  if (columns.some(row => row.name === column)) return;
-  await run(db, `ALTER TABLE ${table} ADD COLUMN ${definition}`);
+/** Добавляет колонку, только если её ещё нет (идемпотентно). */
+function ensureColumn(table, column, definition) {
+  const columns = all(`PRAGMA table_info(${table})`);
+  if (columns.some((row) => row.name === column)) return;
+  run(`ALTER TABLE ${table} ADD COLUMN ${definition}`);
 }
 
 const migrations = [
   {
     id: '000_base_schema',
-    up: async db => {
-      // Таблица платежей
-      await run(db, `
+    up: () => {
+      run(`
         CREATE TABLE IF NOT EXISTS payments (
           id TEXT PRIMARY KEY,
           provider_payment_id TEXT,
@@ -51,8 +48,7 @@ const migrations = [
         )
       `);
 
-      // Таблица записей на сеансы
-      await run(db, `
+      run(`
         CREATE TABLE IF NOT EXISTS sessions (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           payment_id TEXT,
@@ -73,53 +69,50 @@ const migrations = [
         )
       `);
 
-      // Таблица настроек
-      await run(db, `
+      run(`
         CREATE TABLE IF NOT EXISTS settings (
           key TEXT PRIMARY KEY,
           value TEXT
         )
       `);
 
-      // Таблица исключений расписания
-      await run(db, `
+      run(`
         CREATE TABLE IF NOT EXISTS schedule_exceptions (
           date TEXT PRIMARY KEY,
           reason TEXT
         )
       `);
 
-      // Индексы
-      await run(db, `CREATE INDEX IF NOT EXISTS idx_sessions_date ON sessions(session_date)`);
-      await run(db, `CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status)`);
-      await run(db, `CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status)`);
+      run('CREATE INDEX IF NOT EXISTS idx_sessions_date ON sessions(session_date)');
+      run('CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status)');
+      run('CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status)');
     }
   },
   {
     id: '001_indexes_and_legacy_columns',
-    up: async db => {
-      await ensureColumn(db, 'payments', 'provider_payment_id', 'provider_payment_id TEXT');
-      await ensureColumn(db, 'payments', 'comment', 'comment TEXT');
-      await ensureColumn(db, 'payments', 'service_id', 'service_id TEXT');
-      await ensureColumn(db, 'sessions', 'comment', 'comment TEXT');
-      await ensureColumn(db, 'sessions', 'service_id', 'service_id TEXT');
+    up: () => {
+      ensureColumn('payments', 'provider_payment_id', 'provider_payment_id TEXT');
+      ensureColumn('payments', 'comment', 'comment TEXT');
+      ensureColumn('payments', 'service_id', 'service_id TEXT');
+      ensureColumn('sessions', 'comment', 'comment TEXT');
+      ensureColumn('sessions', 'service_id', 'service_id TEXT');
 
-      await run(db, 'CREATE INDEX IF NOT EXISTS idx_sessions_datetime_status ON sessions(session_datetime, status)');
-      await run(db, 'CREATE INDEX IF NOT EXISTS idx_sessions_payment_id ON sessions(payment_id)');
-      await run(db, 'CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_provider_payment_id ON payments(provider_payment_id) WHERE provider_payment_id IS NOT NULL');
+      run('CREATE INDEX IF NOT EXISTS idx_sessions_datetime_status ON sessions(session_datetime, status)');
+      run('CREATE INDEX IF NOT EXISTS idx_sessions_payment_id ON sessions(payment_id)');
+      run('CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_provider_payment_id ON payments(provider_payment_id) WHERE provider_payment_id IS NOT NULL');
     }
   },
   {
     id: '002_slot_integrity_guards',
-    up: async db => {
-      await run(db, `
+    up: () => {
+      run(`
         CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_individual_slot_guard
         ON sessions(session_datetime)
         WHERE status IN ('scheduled', 'completed')
           AND COALESCE(service_id, '') <> 'group'
       `);
 
-      await run(db, `
+      run(`
         CREATE INDEX IF NOT EXISTS idx_sessions_group_customer_phone_guard
         ON sessions(session_datetime, service_id, client_phone)
         WHERE status IN ('scheduled', 'completed')
@@ -128,7 +121,7 @@ const migrations = [
           AND client_phone <> ''
       `);
 
-      await run(db, `
+      run(`
         CREATE INDEX IF NOT EXISTS idx_sessions_group_customer_email_guard
         ON sessions(session_datetime, service_id, client_email)
         WHERE status IN ('scheduled', 'completed')
@@ -140,8 +133,8 @@ const migrations = [
   },
   {
     id: '003_unified_reviews_table',
-    up: async db => {
-      await run(db, `
+    up: () => {
+      run(`
         CREATE TABLE IF NOT EXISTS reviews (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           rating INTEGER NOT NULL,
@@ -153,22 +146,20 @@ const migrations = [
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
       `);
-      await run(db, `CREATE INDEX IF NOT EXISTS idx_reviews_status ON reviews(status)`);
+      run('CREATE INDEX IF NOT EXISTS idx_reviews_status ON reviews(status)');
     }
   },
   {
     id: '004_individual_slot_guard_by_config',
-    up: async db => {
+    up: () => {
       // Раньше индекс считал групповой только услугу с id = 'group'.
-      // Теперь групповых услуг может быть несколько, поэтому список
-      // исключений строится из config.json (плюс легаси-id 'group').
-      const groupIds = new Set(['group', ...services.filter(s => s.type === 'group').map(s => s.id)]);
-      const list = [...groupIds]
-        .map(id => `'${String(id).replace(/'/g, "''")}'`)
-        .join(', ');
+      // Теперь групповых услуг может быть несколько, поэтому список исключений
+      // строится из config.json (плюс легаси-id 'group').
+      const groupIds = new Set(['group', ...services.filter((s) => s.type === 'group').map((s) => s.id)]);
+      const list = [...groupIds].map((id) => `'${String(id).replace(/'/g, "''")}'`).join(', ');
 
-      await run(db, 'DROP INDEX IF EXISTS idx_sessions_individual_slot_guard');
-      await run(db, `
+      run('DROP INDEX IF EXISTS idx_sessions_individual_slot_guard');
+      run(`
         CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_individual_slot_guard
         ON sessions(session_datetime)
         WHERE status IN ('scheduled', 'completed')
@@ -178,8 +169,8 @@ const migrations = [
   }
 ];
 
-async function runMigrations(db, logger = console) {
-  await run(db, `
+export function runMigrations(logger = console) {
+  run(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
       id TEXT PRIMARY KEY,
       applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -187,15 +178,16 @@ async function runMigrations(db, logger = console) {
   `);
 
   for (const migration of migrations) {
-    const rows = await all(db, 'SELECT id FROM schema_migrations WHERE id = ?', [migration.id]);
-    if (rows.length > 0) continue;
+    const applied = all('SELECT id FROM schema_migrations WHERE id = ?', [migration.id]);
+    if (applied.length > 0) continue;
 
-    await migration.up(db);
-    await run(db, 'INSERT INTO schema_migrations (id) VALUES (?)', [migration.id]);
-    logger.info ? logger.info(`Applied migration ${migration.id}`) : logger.log(`Applied migration ${migration.id}`);
+    const apply = sqlite.transaction(() => {
+      migration.up();
+      run('INSERT INTO schema_migrations (id) VALUES (?)', [migration.id]);
+    });
+    apply();
+
+    if (logger.info) logger.info(`Applied migration ${migration.id}`);
+    else logger.log(`Applied migration ${migration.id}`);
   }
 }
-
-module.exports = {
-  runMigrations
-};

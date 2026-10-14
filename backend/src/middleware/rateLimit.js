@@ -1,40 +1,19 @@
-const rateLimit = require('express-rate-limit');
-const config = require('../utils/config');
-
 /**
- * Фабрика лимитеров запросов.
+ * Настройки ограничения частоты запросов (@fastify/rate-limit).
  *
  * В тестовом окружении лимиты отключены, чтобы интеграционные тесты не
  * упирались в защиту от брутфорса.
  */
-function createLimiter(options) {
-  if (config.app.nodeEnv === 'test') {
-    return (req, res, next) => next();
-  }
-  return rateLimit(options);
+import config from '../config/index.js';
+
+const isTest = config.app.nodeEnv === 'test';
+
+/** Опции для глобального лимитера. */
+export function globalRateLimitOptions() {
+  return isTest ? { global: false } : { global: true, max: 100, timeWindow: '1 minute' };
 }
 
-// Общий лимит для всех API-запросов.
-const globalLimiter = createLimiter({
-  windowMs: 60 * 1000,
-  max: 100,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { success: false, error: 'Слишком много запросов' }
-});
-
-// Строгий лимит для чувствительных операций (создание платежа, отзывы и т.п.).
-const strictLimiter = createLimiter({
-  windowMs: 60 * 1000,
-  max: 10,
-  message: { success: false, error: 'Слишком много попыток' }
-});
-
-// Лимит для публичных операций отмены брони.
-const cancelLimiter = createLimiter({
-  windowMs: 60 * 1000,
-  max: 5,
-  message: { success: false, error: 'Слишком много попыток' }
-});
-
-module.exports = { createLimiter, globalLimiter, strictLimiter, cancelLimiter };
+/** Конфигурация маршрута со строгим лимитом (для чувствительных операций). */
+export function limitOptions(max, timeWindow = '1 minute') {
+  return isTest ? {} : { rateLimit: { max, timeWindow } };
+}

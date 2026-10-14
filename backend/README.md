@@ -25,28 +25,42 @@ npm run dev                  # автоперезапуск (node --watch)
 | `npm run check` | `node --check` + тесты |
 | `npm run security:check` | Проверка базовых требований безопасности |
 
+## Стек
+
+- **Fastify 5** (ESM) — HTTP-сервер и роутинг;
+- **better-sqlite3** — синхронный доступ к SQLite (WAL);
+- **zod** — валидация входных данных;
+- **pino** — структурированные логи;
+- **nodemailer**, **@fastify/helmet**, **@fastify/cors**, **@fastify/rate-limit**,
+  **@fastify/static**.
+
+Проект — чистый ESM (`"type": "module"`), Node.js ≥ 20.
+
 ## Структура
 
 ```
 backend/
-├── server.js            # сборка приложения, middleware, статика, shutdown
-├── database.js          # обёртка над sqlite3 (WAL, retry, методы домена)
-├── migrations.js        # схема БД
+├── server.js            # entrypoint: listen + graceful shutdown
 ├── config.json          # услуги, цены, расписание
 ├── diplomas.json        # список дипломов для галереи
 ├── security-check.js    # скрипт проверки безопасности
 └── src/
+    ├── app.js           # сборка приложения (плагины, статика, обработчики ошибок)
+    ├── config/          # env (zod-валидация) + собранная конфигурация
+    ├── db/              # соединение, миграции, репозитории
+    ├── domain/          # доменная логика: каталог услуг, слоты расписания
     ├── controllers/     # payments, sessions, schedule, reviews, services, admin
-    ├── routes/          # монтирование под /api/*
-    ├── services/        # paymentService (ЮKassa), email, vk, notifications
-    ├── middleware/      # auth, rateLimit, validation
-    └── utils/           # config, logger
+    ├── routes/          # монтирование под /api/* и zod-схемы
+    ├── services/        # ЮKassa, email, уведомления
+    ├── middleware/      # auth, rateLimit
+    ├── lib/             # security, sessionBooking, vkNotifier, text
+    └── utils/           # logger, errors
 ```
 
 ## Конфигурация
 
-Все переменные окружения читаются через `src/utils/config.js`.
-Список переменных — в корневом [`.env.example`](../.env.example).
+Переменные окружения читаются и валидируются через `src/config/env.js`
+(zod). Список переменных — в корневом [`.env.example`](../.env.example).
 
 Ключевые:
 
@@ -68,7 +82,7 @@ backend/
 ## Проверка
 
 ```bash
-npm test                 # 19 интеграционных проверок
+npm test                 # 21 интеграционная проверка
 npm run security:check
 ```
 
@@ -76,6 +90,6 @@ npm run security:check
 
 - Секреты — только в `.env` (файл в `.gitignore`).
 - Публичные эндпоинты лимитированы (`src/middleware/rateLimit.js`).
-- Ввод валидируется (express-validator) и санитизируется.
+- Ввод валидируется (zod) и санитизируется.
 - Вебхук ЮKassa проверяется по подписи (`YOOKASSA_WEBHOOK_SECRET`).
 - Логи не содержат секретов и платёжных данных целиком.

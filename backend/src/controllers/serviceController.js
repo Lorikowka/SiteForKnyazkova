@@ -1,11 +1,16 @@
-const path = require('path');
-const fs = require('fs');
-const db = require('../../database');
-const config = require('../utils/config');
-const logger = require('../utils/logger');
+/**
+ * Служебные эндпоинты: каталог услуг, дипломы и health-check.
+ */
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const DIPLOMAS_PATH = path.join(__dirname, '..', '..', 'diplomas.json');
-const { version: APP_VERSION } = require('../../package.json');
+import config from '../config/index.js';
+import db from '../db/index.js';
+import logger from '../utils/logger.js';
+
+const CONTROLLER_DIR = path.dirname(fileURLToPath(import.meta.url));
+const DIPLOMAS_PATH = path.join(CONTROLLER_DIR, '..', '..', 'diplomas.json');
 
 let diplomasCache = null;
 
@@ -22,35 +27,33 @@ function loadDiplomas() {
   return diplomasCache;
 }
 
-const getServices = (req, res) => {
-  res.json({
+export async function getServices(request, reply) {
+  return reply.send({
     success: true,
     services: config.services,
     schedule: config.schedule
   });
-};
+}
 
-const getDiplomas = (req, res) => {
-  res.json({ success: true, diplomas: loadDiplomas() });
-};
+export async function getDiplomas(request, reply) {
+  return reply.send({ success: true, diplomas: loadDiplomas() });
+}
 
-const getHealth = async (req, res) => {
+export async function getHealth(request, reply) {
   let database = 'ok';
   try {
-    await db.get('SELECT 1');
+    db.get('SELECT 1');
   } catch {
     database = 'error';
   }
 
-  res.status(database === 'ok' ? 200 : 503).json({
+  return reply.code(database === 'ok' ? 200 : 503).send({
     status: database === 'ok' ? 'ok' : 'degraded',
     timestamp: new Date().toISOString(),
     service: 'psixolog-payment-backend',
-    version: APP_VERSION,
+    version: config.app.version,
     environment: config.app.nodeEnv,
     payment_mode: config.app.mockMode ? 'MOCK' : 'YooKassa',
     database
   });
-};
-
-module.exports = { getServices, getHealth, getDiplomas };
+}

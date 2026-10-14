@@ -1,36 +1,41 @@
 {
   "name": "psixolog-payment-backend",
-  "version": "1.1.0",
+  "version": "2.0.0",
   "private": true,
+  "type": "module",
   "description": "Backend для приёма платежей (ЮKassa) и управления записями — психолог Екатерина Князькова",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
     "test": "node test/run-tests.js",
-    "check": "node --check server.js && node --check database.js && npm run test",
+    "check": "node --check server.js && npm run test",
     "security:check": "node security-check.js"
   },
   "keywords": [
     "yookassa",
     "payment",
     "psychologist",
-    "security"
+    "security",
+    "fastify",
+    "sqlite"
   ],
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "cors": "^2.8.5",
-    "dotenv": "^16.3.1",
-    "express": "^4.18.2",
-    "express-rate-limit": "^7.1.5",
-    "express-validator": "^7.0.1",
-    "helmet": "^7.1.0",
+    "@fastify/cors": "^11.3.1",
+    "@fastify/helmet": "^13.2.0",
+    "@fastify/rate-limit": "^11.2.1",
+    "@fastify/static": "^10.1.6",
+    "better-sqlite3": "^13.0.3",
+    "dotenv": "^16.6.1",
+    "fastify": "^5.12.7",
     "nodemailer": "^10.1.1",
-    "sqlite3": "^6.0.1",
-    "winston": "^3.11.0"
+    "pino": "^10.4.0",
+    "pino-pretty": "^13.2.0",
+    "zod": "^4.6.7"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.0.0"
   }
 }
