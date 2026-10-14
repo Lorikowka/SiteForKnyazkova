@@ -140,7 +140,7 @@ const getSchedule = async (req, res) => {
       if (exceptionDates.includes(key)) continue;
       
       const available = [];
-      allSlots[key] = allTimes;
+      allSlots[key] = [...allTimes];
       
       for (const time of allTimes) {
         const entries = usageMap[`${key}|${time}`] || [];
@@ -179,7 +179,7 @@ const getSchedule = async (req, res) => {
     });
   } catch (error) {
     logger.error(`Get schedule error: ${error.message}`);
-    res.status(500).json({ success: false, error: 'Schedule Error: ' + error.message });
+    res.status(500).json({ success: false, error: 'Не удалось получить расписание' });
   }
 };
 
@@ -192,7 +192,7 @@ const blockDate = async (req, res) => {
     res.json({ success: true, message: `Дата ${date} закрыта` });
   } catch (error) {
     logger.error(`Block date error: ${error.message}`);
-    res.status(500).json({ success: false, error: 'Schedule Error: ' + error.message });
+    res.status(500).json({ success: false, error: 'Не удалось закрыть дату' });
   }
 };
 
@@ -204,7 +204,7 @@ const unblockDate = async (req, res) => {
     res.json({ success: true, message: `Дата ${date} открыта` });
   } catch (error) {
     logger.error(`Unblock date error: ${error.message}`);
-    res.status(500).json({ success: false, error: 'Schedule Error: ' + error.message });
+    res.status(500).json({ success: false, error: 'Не удалось открыть дату' });
   }
 };
 
@@ -214,7 +214,7 @@ const listBlockedDates = async (req, res) => {
     res.json({ success: true, blocks });
   } catch (error) {
     logger.error(`List blocked dates error: ${error.message}`);
-    res.status(500).json({ success: false, error: 'Schedule Error: ' + error.message });
+    res.status(500).json({ success: false, error: 'Не удалось получить список закрытых дат' });
   }
 };
 

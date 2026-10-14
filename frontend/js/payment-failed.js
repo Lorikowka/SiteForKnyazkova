@@ -16,6 +16,14 @@
 
   let paymentDetails = null;
 
+  const paymentStatusLabels = {
+    pending: 'Ожидает оплаты',
+    succeeded: 'Оплачена',
+    waiting_for_capture: 'Ожидает подтверждения',
+    canceled: 'Отменена',
+    expired: 'Истекла'
+  };
+
   const reasonMap = {
     cancelled: { title: 'Оплата отменена', text: 'Вы не завершили оплату. Попробуйте выбрать время и оплатить запись ещё раз.' },
     canceled: { title: 'Оплата отменена', text: 'Платёж был отменён. Вы можете попробовать снова.' },
@@ -111,7 +119,7 @@
       .then(data => {
         const payment = data.payment;
         paymentDetails = payment;
-        document.getElementById('detail-status').textContent = payment.status || '—';
+        document.getElementById('detail-status').textContent = paymentStatusLabels[payment.status] || payment.status || '—';
         document.getElementById('detail-amount').textContent = payment.amount ? `${payment.amount} ₽` : '—';
         document.getElementById('detail-id').textContent = payment.id || '—';
         detailsBox.classList.remove('hidden');

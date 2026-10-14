@@ -71,7 +71,7 @@ async function getDuplicateGroupBooking({
 const createPayment = async (req, res) => {
   try {
     const {
-      amount = 3500,
+      amount,
       description = 'Консультация психолога',
       orderId,
       customerEmail,
@@ -84,6 +84,14 @@ const createPayment = async (req, res) => {
       sessionDatetime,
       comment
     } = req.body;
+
+    // Цену определяет сервер по конфигурации услуги, а не клиент:
+    // иначе стоимость можно подменить в теле запроса.
+    const serviceConfig = getServiceConfig(serviceId, serviceName);
+    const requestedAmount = Number(amount);
+    const resolvedAmount = Number.isFinite(serviceConfig.price) && serviceConfig.price > 0
+      ? serviceConfig.price
+      : (Number.isFinite(requestedAmount) && requestedAmount > 0 ? requestedAmount : 3500);
 
     const orderNumber = orderId || `order_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
     const paymentId = `pay_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
@@ -130,7 +138,7 @@ const createPayment = async (req, res) => {
     await db.createPayment({
       id: paymentId,
       order_id: orderNumber,
-      amount,
+      amount: resolvedAmount,
       currency: 'RUB',
       status: 'pending',
       description,
@@ -148,8 +156,8 @@ const createPayment = async (req, res) => {
       return res.json({
         success: true,
         paymentId,
-        confirmationUrl: `${config.app.siteUrl}/payment-check.html?mock=true&amount=${amount}&payment_id=${paymentId}&token=${statusToken}`,
-        amount: amount.toString(),
+        confirmationUrl: `${config.app.siteUrl}/payment-check.html?mock=true&amount=${resolvedAmount}&payment_id=${paymentId}&token=${statusToken}`,
+        amount: resolvedAmount.toString(),
         statusToken,
         mock: true
       });
@@ -164,7 +172,7 @@ const createPayment = async (req, res) => {
     }
 
     const ykPayment = await createYooKassaPayment({
-      amount,
+      amount: resolvedAmount,
       description,
       metadata: paymentMetadata,
       returnUrl: `${config.app.siteUrl}/payment-check.html?payment_id=${paymentId}&token=${statusToken}`,

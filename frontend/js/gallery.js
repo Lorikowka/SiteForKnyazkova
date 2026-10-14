@@ -130,6 +130,8 @@ function initGallery() {
 
   if (diplomaPrevBtn) diplomaPrevBtn.addEventListener('click', () => diplomaScrollEl.scrollBy({ left: -320, behavior: 'smooth' }));
   if (diplomaNextBtn) diplomaNextBtn.addEventListener('click', () => diplomaScrollEl.scrollBy({ left: 320, behavior: 'smooth' }));
+  if (diplomaScrollEl) diplomaScrollEl.addEventListener('scroll', updateDiplomaNavButtons, { passive: true });
+  window.addEventListener('resize', updateDiplomaNavButtons);
   if (lbClose) lbClose.addEventListener('click', closeLightbox);
   if (lbOverlay) lbOverlay.addEventListener('click', e => { if (e.target === lbOverlay) closeLightbox(); });
   

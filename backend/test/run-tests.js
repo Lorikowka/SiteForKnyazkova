@@ -163,6 +163,22 @@ test('mock payment can be created and read back', async () => {
   assert.equal(detailsBody.payment.status, 'succeeded');
 });
 
+test('create-payment ignores a tampered amount and uses the service price', async () => {
+  const { response, body } = await createMockPayment({
+    amount: 1,
+    serviceId: 'consult-2',
+    serviceName: 'Пакет 2 консультации',
+    sessionDate: '2099-06-20',
+    sessionTime: '10:00',
+    sessionDatetime: '2099-06-20T10:00:00'
+  });
+
+  assert.equal(response.status, 200);
+  const payment = await db.getPayment(body.paymentId);
+  assert.equal(payment.amount, 6500);
+  assert.equal(String(body.amount), '6500');
+});
+
 test('payment details require a valid token', async () => {
   const { body } = await createMockPayment({
     sessionDate: '2099-06-01',

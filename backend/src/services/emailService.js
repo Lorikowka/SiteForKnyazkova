@@ -21,7 +21,7 @@ async function sendEmailConfirmation({ email, name, amount, serviceName, session
 
     const htmlContent = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <h2 style="color: #667eea;">✅ Оплата прошла успешно!</h2>
+        <h2 style="color: #2c7a55;">✅ Оплата прошла успешно!</h2>
         <p>Здравствуйте, <strong>${escapeHtml(name)}</strong>!</p>
         <p>Ваша оплата принята. Детали записи:</p>
 
@@ -40,7 +40,7 @@ async function sendEmailConfirmation({ email, name, amount, serviceName, session
           </tr>
           <tr>
             <td style="padding: 10px; border-bottom: 1px solid #eee; color: #666;">Сумма:</td>
-            <td style="padding: 10px; border-bottom: 1px solid #eee;"><strong style="color: #4CAF50;">${escapeHtml(amount.toString())} ₽</strong></td>
+            <td style="padding: 10px; border-bottom: 1px solid #eee;"><strong style="color: #2c7a55;">${escapeHtml(String(amount ?? '—'))} ₽</strong></td>
           </tr>
           <tr>
             <td style="padding: 10px; border-bottom: 1px solid #eee; color: #666;">ID платежа:</td>
@@ -51,7 +51,7 @@ async function sendEmailConfirmation({ email, name, amount, serviceName, session
         <p style="margin-top: 30px; padding-top: 20px; border-top: 2px solid #eee; color: #999; font-size: 14px;">
           Мы свяжемся с вами для подтверждения записи.<br>
           Если у вас есть вопросы, напишите нам в
-          <a href="https://t.me/Ekaterina_K" style="color: #667eea;">Telegram</a>
+          <a href="https://t.me/Ekaterina_K" style="color: #2c7a55;">Telegram</a>
         </p>
       </div>
     `;

@@ -5,6 +5,7 @@ const config = require('../utils/config');
 const logger = require('../utils/logger');
 
 const DIPLOMAS_PATH = path.join(__dirname, '..', '..', 'diplomas.json');
+const { version: APP_VERSION } = require('../../package.json');
 
 let diplomasCache = null;
 
@@ -45,7 +46,7 @@ const getHealth = async (req, res) => {
     status: database === 'ok' ? 'ok' : 'degraded',
     timestamp: new Date().toISOString(),
     service: 'psixolog-payment-backend',
-    version: '1.0.0',
+    version: APP_VERSION,
     environment: config.app.nodeEnv,
     payment_mode: config.app.mockMode ? 'MOCK' : 'YooKassa',
     database
