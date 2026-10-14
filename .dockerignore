@@ -1,0 +1,26 @@
+# Контекст сборки vk-bot/telegram-bot — корень репозитория,
+# поэтому исключаем всё тяжёлое и секретное.
+.git
+.gitignore
+.vscode
+.idea
+
+**/node_modules
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/.venv
+**/venv
+**/.vkbottle
+
+**/.env
+**/.env.*
+!**/.env.example
+
+**/logs
+**/data
+**/*.log
+**/*.db
+**/*.db-shm
+**/*.db-wal
+**/*.db-journal

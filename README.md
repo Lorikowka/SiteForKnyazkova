@@ -17,9 +17,9 @@
 
 | Слой | Технологии |
 |------|-----------|
-| Backend | Node.js ≥ 18, Express 4, SQLite (`sqlite3`), Helmet, express-rate-limit, express-validator, winston, nodemailer |
+| Backend | Node.js ≥ 20, Fastify 5 (ESM), SQLite (`better-sqlite3`), `@fastify/helmet`, `@fastify/rate-limit`, `@fastify/cors`, `@fastify/static`, zod, pino, nodemailer |
 | Frontend | Vanilla HTML/CSS/JS (без сборки) |
-| Боты | Python 3.10+ (`python-telegram-bot` 21.x, `aiohttp`) |
+| Боты | Python 3.11+ (`aiogram` 3 для Telegram, `vkbottle` 4 для VK, `aiohttp`) + общий пакет `bots-common` |
 | Инфраструктура | Docker / docker-compose, nginx |
 
 ## Структура проекта
@@ -27,12 +27,10 @@
 ```
 .
 ├── backend/            # API + раздача статики + SQLite
-│   ├── server.js
-│   ├── database.js
-│   ├── migrations.js
+│   ├── server.js       # entrypoint (listen + graceful shutdown)
 │   ├── config.json     # услуги, цены, расписание
 │   ├── diplomas.json   # список дипломов для галереи
-│   └── src/            # controllers, routes, middleware, services, utils
+│   └── src/            # app.js, config, db, domain, controllers, routes, services, middleware, lib
 ├── frontend/           # HTML/CSS/JS (отдаётся backend или nginx)
 │   ├── index.html
 │   ├── payment-check.html
@@ -40,8 +38,9 @@
 │   ├── offer.html / privacy.html / consent.html
 │   ├── css/  js/  images/
 │   └── nginx.conf      # для контейнера: статика + прокси /api
-├── telegram-bot/       # админ-бот Telegram
-├── vk-bot/             # админ-бот VK
+├── bots-common/        # общее ядро Python-ботов (клиент backend, форматирование)
+├── telegram-bot/       # админ-бот Telegram (aiogram 3)
+├── vk-bot/             # админ-бот VK (vkbottle 4)
 ├── docker-compose.yml
 └── .env.example
 ```
@@ -76,6 +75,8 @@ cd vk-bot       && pip install -r requirements.txt && python bot.py
 ```
 
 Перед запуском скопируйте `.env.example` в `.env` в соответствующей папке.
+Общий код лежит в `bots-common/` — каждый бот подключает его автоматически
+(локально через `sys.path`, в Docker — через `PYTHONPATH`).
 
 ## Переменные окружения
 
@@ -145,7 +146,7 @@ docker compose up -d --build
 
 - `backend` — API + БД, порт `1488`;
 - `frontend` — nginx на порту `80`, проксирует `/api` на backend;
-- `vk-bot` — опционально.
+- `vk-bot`, `telegram-bot` — опциональные админ-боты (образ собирается из корня репозитория, чтобы был доступен `bots-common`).
 
 ### Раздельный хостинг
 

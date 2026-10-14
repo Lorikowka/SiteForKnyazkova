@@ -23,6 +23,7 @@ __pycache__/
 *.pyc
 telegram-bot/venv/
 vk-bot/venv/
+.vkbottle/
 
 # Редакторы
 .vscode/

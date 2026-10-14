@@ -28,7 +28,9 @@ services:
       - backend
 
   vk-bot:
-    build: ./vk-bot
+    build:
+      context: .
+      dockerfile: vk-bot/Dockerfile
     container_name: app_vk_bot
     restart: unless-stopped
     env_file:
@@ -38,5 +40,20 @@ services:
     volumes:
       - ./vk-bot/data:/app/data
       - ./vk-bot/logs:/app/logs
+    depends_on:
+      - backend
+
+  telegram-bot:
+    build:
+      context: .
+      dockerfile: telegram-bot/Dockerfile
+    container_name: app_telegram_bot
+    restart: unless-stopped
+    env_file:
+      - ./.env
+    environment:
+      - BACKEND_URL=http://backend:1488
+    volumes:
+      - ./telegram-bot/logs:/app/logs
     depends_on:
       - backend

@@ -1,1 +1,2 @@
-aiohttp>=3.8.0
+vkbottle>=4.11,<5
+aiohttp>=3.9.0

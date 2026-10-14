@@ -12,7 +12,7 @@
                                 ▼
                     ┌──────────────────────────┐        ┌──────────────┐
                     │        Backend           │◀──────▶│   ЮKassa     │
-                    │  Express + SQLite (WAL)  │        └──────────────┘
+                    │  Fastify + SQLite (WAL)  │        └──────────────┘
                     └───────┬─────────┬────────┘
                             │         │
               ┌─────────────┘         └───────────────┐
@@ -29,22 +29,24 @@
 
 ## Backend
 
-- **server.js** — сборка приложения: middleware (helmet, CORS, JSON, rate-limit),
-  монтирование роутов под `/api/...`, раздача статики `frontend/`,
-  обработчик 404 для API, централизованный обработчик ошибок, graceful shutdown.
-- **database.js** — обёртка над `sqlite3` (WAL-режим, retry для блокировок),
-  методы для платежей, сессий, отзывов и исключений расписания.
-- **migrations.js** — создание и обновление схемы БД при старте.
+- **server.js** — точка входа: запуск Fastify (`buildApp()`), graceful shutdown.
+- **src/app.js** — сборка приложения: CORS, helmet, rate-limit, content-type
+  парсер (сохраняет `rawBody` для проверки подписи вебхука), раздача статики
+  `frontend/`, обработчик 404 для API и централизованный обработчик ошибок.
+- **src/config/** — `env.js` (чтение и zod-валидация переменных окружения) и
+  собранная конфигурация приложения.
+- **src/db/** — соединение с SQLite (`better-sqlite3`, WAL-режим), миграции
+  и репозитории (payments, sessions, schedule, reviews).
+- **src/domain/** — доменная логика: `catalog` (услуги и цены), `slots`
+  (формирование расписания).
 - **config.json** — бизнес-данные: услуги, цены, параметры расписания.
-- **src/utils/config.js** — единая точка чтения переменных окружения.
 - **src/controllers/** — HTTP-логика по доменам: payments, sessions, schedule,
   reviews, services, admin.
-- **src/services/** — интеграции: `paymentService` (ЮKassa), `emailService`,
-  `vkService`, `notificationService`.
-- **src/middleware/** — `auth` (API-ключи), `rateLimit` (лимитеры),
-  `validation` (обработка ошибок express-validator).
-- **lib/** — `sessionBooking` (создание записи с защитой слота),
-  `security` (аутентификация по ключам), `vkNotifier`.
+- **src/routes/** — монтирование роутов под `/api/...` и zod-схемы запросов.
+- **src/services/** — интеграции: ЮKassa, e-mail, уведомления.
+- **src/middleware/** — `auth` (API-ключи), `rateLimit` (лимитеры).
+- **src/lib/** — `sessionBooking` (создание записи с защитой слота),
+  `security` (аутентификация по ключам), `vkNotifier`, `text`.
 
 ### Модель данных (основное)
 
@@ -79,10 +81,12 @@
 
 ## Боты
 
-- **telegram-bot/bot.py** — админ-панель Telegram: расписание, статусы,
-  статистика, экспорт `.ics`, напоминания.
-- **vk-bot/bot.py** — админ-панель VK с теми же возможностями и опциональным
-  watcher для уведомлений о новых записях.
+- **bots-common/** — общее ядро: HTTP-клиент backend, форматирование записей,
+  парсеры команд, напоминания/сводки, event-watcher.
+- **telegram-bot/bot.py** — админ-панель Telegram (aiogram 3): расписание,
+  статусы, статистика, экспорт `.ics`, напоминания.
+- **vk-bot/bot.py** — админ-панель VK (vkbottle 4) с теми же возможностями и
+  опциональным watcher для уведомлений о новых записях.
 
 Оба бота работают через API и авторизуются ключом `BOT_API_KEY`
 (должен совпадать с `BOT_API_KEYS` или `API_KEY` в окружении backend).

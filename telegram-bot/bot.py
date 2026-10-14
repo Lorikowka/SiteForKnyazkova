@@ -1,90 +1,59 @@
-"""
-Telegram admin bot built with python-telegram-bot.
+"""Telegram admin bot for bookings (aiogram 3).
 
-The bot talks only to the backend API and never opens SQLite directly.
+Бот общается только с backend API и никогда не открывает SQLite напрямую.
+Общая логика (клиент backend, форматирование, напоминания, экспорт .ics)
+вынесена в пакет ``bots_common``.
 """
 
 from __future__ import annotations
 
 import asyncio
 import html
-import logging
-from logging.handlers import RotatingFileHandler
-import os
-import urllib.parse
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-import aiohttp
-from telegram import (
+BASE_DIR = Path(__file__).resolve().parent
+_SHARED_DIR = BASE_DIR.parent / "bots-common"
+if _SHARED_DIR.is_dir():
+    sys.path.insert(0, str(_SHARED_DIR))
+
+from aiogram import Bot, Dispatcher, F, Router  # noqa: E402
+from aiogram.client.default import DefaultBotProperties  # noqa: E402
+from aiogram.client.session.aiohttp import AiohttpSession  # noqa: E402
+from aiogram.enums import ParseMode  # noqa: E402
+from aiogram.filters import Command, CommandStart  # noqa: E402
+from aiogram.types import (  # noqa: E402
+    BufferedInputFile,
     BotCommand,
+    CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     KeyboardButton,
+    Message,
     ReplyKeyboardMarkup,
-    Update,
 )
-from telegram.ext import (
-    Application,
-    ApplicationBuilder,
-    CallbackQueryHandler,
-    CommandHandler,
-    ContextTypes,
-    MessageHandler,
-    filters,
+
+from bots_common.backend import BackendClient  # noqa: E402
+from bots_common.env import load_env_files  # noqa: E402
+from bots_common.formatting import (  # noqa: E402
+    generate_ics,
+    parse_dt,
+    period_today,
+    period_tomorrow,
+    period_week,
+    status_label,
 )
-from telegram.request import HTTPXRequest
+from bots_common.logging_setup import setup_logging  # noqa: E402
+from bots_common.loops import morning_summary_loop, reminders_loop  # noqa: E402
+from bots_common.settings import env_bool, env_int, env_str  # noqa: E402
 
+# Локальный .env бота имеет приоритет над корневым.
+load_env_files(BASE_DIR / ".env", BASE_DIR.parent / ".env")
 
-BASE_DIR = Path(__file__).resolve().parent
-
-# ——————————————————————————————
-# ЛОГИРОВАНИЕ С РОТАЦИЕЙ
-# ——————————————————————————————
-def setup_logging():
-    log_dir = BASE_DIR / "logs"
-    log_dir.mkdir(exist_ok=True)
-    log_file = log_dir / "bot.log"
-
-    formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
-    
-    # Ротация: 5 файлов по 5 МБ
-    file_handler = RotatingFileHandler(log_file, maxBytes=5*1024*1024, backupCount=5, encoding="utf-8")
-    file_handler.setFormatter(formatter)
-    
-    console_handler = logging.StreamHandler()
-    console_handler.setFormatter(formatter)
-    
-    logger = logging.getLogger("knyazkova_bot")
-    logger.setLevel(logging.INFO)
-    logger.addHandler(file_handler)
-    logger.addHandler(console_handler)
-    
-    # Подавляем лишний шум от библиотек
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
-    
-    return logger
-
-LOGGER = setup_logging()
-
-
-def load_env_file(path: Path) -> None:
-    if not path.exists():
-        return
-
-    for raw_line in path.read_text(encoding="utf-8-sig").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-
-        key, value = line.split("=", 1)
-        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
-
-
-load_env_file(BASE_DIR / ".env")
+LOGGER = setup_logging("knyazkova_telegram_bot", BASE_DIR / "logs")
 
 
 @dataclass(frozen=True)
@@ -100,177 +69,43 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> "Settings":
-        admin_raw = (os.getenv("TELEGRAM_ADMIN_ID", "").strip()
-                     or os.getenv("TELEGRAM_CHAT_ID", "").strip())
+        admin_raw = env_str("TELEGRAM_ADMIN_ID") or env_str("TELEGRAM_CHAT_ID")
         admin_id = int(admin_raw) if admin_raw.lstrip("-").isdigit() else 0
-
         return cls(
-            bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
+            bot_token=env_str("TELEGRAM_BOT_TOKEN"),
             admin_id=admin_id,
-            backend_url=os.getenv("BACKEND_URL", "http://localhost:1488").rstrip("/"),
-            api_key=(os.getenv("BOT_API_KEY") or os.getenv("API_KEY", "")).strip(),
-            telegram_proxy=os.getenv("TELEGRAM_PROXY", "").strip(),
-            reminders_enabled=os.getenv("REMINDERS_ENABLED", "true").lower() == "true",
-            morning_summary_enabled=os.getenv("MORNING_SUMMARY_ENABLED", "true").lower() == "true",
-            morning_summary_hour=int(os.getenv("MORNING_SUMMARY_HOUR", "8") or "8"),
+            backend_url=env_str("BACKEND_URL", "http://localhost:1488").rstrip("/"),
+            api_key=env_str("BOT_API_KEY") or env_str("API_KEY"),
+            telegram_proxy=env_str("TELEGRAM_PROXY"),
+            reminders_enabled=env_bool("REMINDERS_ENABLED", True),
+            morning_summary_enabled=env_bool("MORNING_SUMMARY_ENABLED", True),
+            morning_summary_hour=env_int("MORNING_SUMMARY_HOUR", 8),
         )
 
 
 SETTINGS = Settings.from_env()
+BACKEND = BackendClient(SETTINGS.backend_url, SETTINGS.api_key)
+
+BOT: Bot | None = None
+router = Router()
+_background_tasks: set[asyncio.Task] = set()
 
 
-class BackendClient:
-    def __init__(self, base_url: str, api_key: str) -> None:
-        self.base_url = base_url
-        self.api_key = api_key
-        self.session: aiohttp.ClientSession | None = None
-
-    async def open(self) -> None:
-        if self.session is None or self.session.closed:
-            self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15))
-
-    async def close(self) -> None:
-        if self.session and not self.session.closed:
-            await self.session.close()
-
-    async def request(self, method: str, endpoint: str, **kwargs: Any) -> dict[str, Any] | None:
-        await self.open()
-        assert self.session is not None
-
-        headers = kwargs.pop("headers", {})
-        if self.api_key:
-            headers["X-Bot-API-Key"] = self.api_key
-            headers["X-API-Key"] = self.api_key
-
-        try:
-            async with self.session.request(
-                method,
-                f"{self.base_url}{endpoint}",
-                headers=headers,
-                **kwargs,
-            ) as response:
-                text = await response.text()
-                if response.status >= 400:
-                    LOGGER.warning("Backend %s %s failed: %s %s", method, endpoint, response.status, text)
-                    if response.status == 401:
-                        LOGGER.warning("Check BOT_API_KEY/API_KEY in telegram-bot/.env and BOT_API_KEYS in backend/.env")
-                    return None
-
-                if not text:
-                    return {}
-
-                try:
-                    return await response.json()
-                except aiohttp.ContentTypeError:
-                    LOGGER.warning("Backend returned non-JSON response: %s", text)
-                    return None
-        except (aiohttp.ClientError, asyncio.TimeoutError) as error:
-            LOGGER.warning("Backend request error: %s %s: %s", method, endpoint, error)
-            return None
-
-    async def health(self) -> dict[str, Any] | None:
-        return await self.request("GET", "/api/health")
-
-    async def can_access_protected_api(self) -> bool:
-        data = await self.request("GET", "/api/sessions?limit=1")
-        return bool(data and data.get("success"))
-
-    async def sessions(
-        self,
-        *,
-        past: bool = False,
-        limit: int = 100,
-        start: str | None = None,
-        end: str | None = None,
-        status: str | None = None,
-    ) -> list[dict[str, Any]]:
-        params = {"past": str(past).lower(), "limit": str(limit)}
-        if start:
-            params["from"] = start
-        if end:
-            params["to"] = end
-        if status:
-            params["status"] = status
-
-        data = await self.request("GET", f"/api/sessions?{urllib.parse.urlencode(params)}")
-        return data.get("sessions", []) if data and data.get("success") else []
-
-    async def payments(self, *, limit: int = 20) -> list[dict[str, Any]]:
-        data = await self.request("GET", f"/api/payments?limit={limit}")
-        return data.get("payments", []) if data and data.get("success") else []
-
-    async def delete_session(self, session_id: int) -> bool:
-        data = await self.request("DELETE", f"/api/sessions/{session_id}")
-        return bool(data and data.get("success"))
-
-    async def update_session_status(self, session_id: int, status: str) -> bool:
-        data = await self.request("PATCH", f"/api/sessions/{session_id}/status", json={"status": status})
-        return bool(data and data.get("success"))
-
-    async def reminders_due(self) -> list[dict[str, Any]]:
-        data = await self.request("GET", "/api/sessions/reminders/due")
-        return data.get("sessions", []) if data and data.get("success") else []
-
-    async def mark_reminder_sent(self, session_id: int) -> bool:
-        data = await self.request("POST", f"/api/sessions/reminders/{session_id}/mark-sent")
-        return bool(data and data.get("success"))
-
-
-api = BackendClient(SETTINGS.backend_url, SETTINGS.api_key)
-
-
-def is_admin(user_id: int | None) -> bool:
-    return SETTINGS.admin_id <= 0 or bool(user_id and user_id == SETTINGS.admin_id)
-
-
-async def guard(update: Update) -> bool:
-    user = update.effective_user
-    if is_admin(user.id if user else None):
-        return True
-
-    if update.message:
-        await update.message.reply_text("Access denied.")
-    elif update.callback_query:
-        await update.callback_query.answer("Access denied.", show_alert=True)
-    return False
+# —————————————————————————————— Разметка ——————————————————————————————
 
 
 def esc(value: Any) -> str:
-    return html.escape(str(value or ""))
-
-
-def parse_dt(session: dict[str, Any]) -> datetime | None:
-    value = str(session.get("session_datetime") or "")
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
-    except ValueError:
-        return None
-
-
-def period_today() -> tuple[str, str]:
-    start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    return start.isoformat(), (start + timedelta(days=1)).isoformat()
-
-
-def period_tomorrow() -> tuple[str, str]:
-    start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
-    return start.isoformat(), (start + timedelta(days=1)).isoformat()
-
-
-def period_week(anchor: datetime | None = None) -> tuple[str, str]:
-    anchor = anchor or datetime.now()
-    start = anchor - timedelta(days=anchor.weekday())
-    start = start.replace(hour=0, minute=0, second=0, microsecond=0)
-    return start.isoformat(), (start + timedelta(days=7)).isoformat()
+    """Экранирует значение для HTML-разметки Telegram."""
+    return html.escape(str(value if value is not None else ""))
 
 
 def main_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        [
-            [KeyboardButton("Сегодня"), KeyboardButton("Завтра")],
-            [KeyboardButton("Эта неделя"), KeyboardButton("Все записи")],
-            [KeyboardButton("Статистика"), KeyboardButton("Платежи")],
-            [KeyboardButton("Экспорт календаря"), KeyboardButton("Обновить")],
+        keyboard=[
+            [KeyboardButton(text="Сегодня"), KeyboardButton(text="Завтра")],
+            [KeyboardButton(text="Эта неделя"), KeyboardButton(text="Все записи")],
+            [KeyboardButton(text="Статистика"), KeyboardButton(text="Платежи")],
+            [KeyboardButton(text="Экспорт календаря"), KeyboardButton(text="Обновить")],
         ],
         resize_keyboard=True,
     )
@@ -278,46 +113,38 @@ def main_keyboard() -> ReplyKeyboardMarkup:
 
 def session_keyboard(session_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
-        [
+        inline_keyboard=[
             [
-                InlineKeyboardButton("Проведен", callback_data=f"session:complete:{session_id}"),
-                InlineKeyboardButton("Отменить", callback_data=f"session:cancel:{session_id}"),
+                InlineKeyboardButton(text="Проведен", callback_data=f"session:complete:{session_id}"),
+                InlineKeyboardButton(text="Отменить", callback_data=f"session:cancel:{session_id}"),
             ],
-            [InlineKeyboardButton("Детали", callback_data=f"session:detail:{session_id}")],
+            [InlineKeyboardButton(text="Детали", callback_data=f"session:detail:{session_id}")],
         ]
     )
 
 
 def export_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
-        [
+        inline_keyboard=[
             [
-                InlineKeyboardButton("Эта неделя .ics", callback_data="export:week"),
-                InlineKeyboardButton("Следующая .ics", callback_data="export:next_week"),
+                InlineKeyboardButton(text="Эта неделя .ics", callback_data="export:week"),
+                InlineKeyboardButton(text="Следующая .ics", callback_data="export:next_week"),
             ],
             [
-                InlineKeyboardButton("Месяц .ics", callback_data="export:month"),
-                InlineKeyboardButton("Все будущие .ics", callback_data="export:all"),
+                InlineKeyboardButton(text="Месяц .ics", callback_data="export:month"),
+                InlineKeyboardButton(text="Все будущие .ics", callback_data="export:all"),
             ],
         ]
     )
 
 
-def status_label(status: str) -> str:
-    return {
-        "scheduled": "запланирован",
-        "completed": "проведен",
-        "cancelled": "отменен",
-        "pending": "ожидает",
-        "succeeded": "оплачен",
-        "canceled": "отменен",
-        "expired": "истек",
-    }.get(status, status or "неизвестно")
-
-
 def format_session_short(session: dict[str, Any]) -> str:
     dt = parse_dt(session)
-    when = dt.strftime("%d.%m.%Y %H:%M") if dt else f"{session.get('session_date', '?')} {session.get('session_time', '?')}"
+    when = (
+        dt.strftime("%d.%m.%Y %H:%M")
+        if dt
+        else f"{session.get('session_date', '?')} {session.get('session_time', '?')}"
+    )
     return (
         f"<b>{esc(when)}</b>\n"
         f"{esc(session.get('client_name'))}\n"
@@ -356,153 +183,157 @@ def format_session_full(session: dict[str, Any]) -> str:
 def format_header(title: str, sessions: list[dict[str, Any]]) -> str:
     active = [item for item in sessions if item.get("status") != "cancelled"]
     total = sum(float(item.get("amount") or 0) for item in active)
-    return f"<b>{esc(title)}</b>\n\nЗаписей: {len(sessions)}\nАктивных: {len(active)}\nСумма: {total:.0f} руб."
+    return (
+        f"<b>{esc(title)}</b>\n\n"
+        f"Записей: {len(sessions)}\nАктивных: {len(active)}\nСумма: {total:.0f} руб."
+    )
 
 
-async def send_sessions(update: Update, title: str, sessions: list[dict[str, Any]], limit: int = 30) -> None:
-    message = update.effective_message
-    if not message:
-        return
+# —————————————————————————————— Доступ ——————————————————————————————
 
+
+def is_admin(user_id: int | None) -> bool:
+    return SETTINGS.admin_id <= 0 or bool(user_id and user_id == SETTINGS.admin_id)
+
+
+async def guard_message(message: Message) -> bool:
+    if is_admin(message.from_user.id if message.from_user else None):
+        return True
+    await message.answer("Access denied.")
+    return False
+
+
+async def guard_callback(query: CallbackQuery) -> bool:
+    if is_admin(query.from_user.id if query.from_user else None):
+        return True
+    await query.answer("Access denied.", show_alert=True)
+    return False
+
+
+# —————————————————————————————— Отправка ——————————————————————————————
+
+
+async def send_sessions(message: Message, title: str, sessions: list[dict[str, Any]], limit: int = 30) -> None:
     if not sessions:
-        await message.reply_text(f"<b>{esc(title)}</b>\n\nЗаписей нет.", reply_markup=main_keyboard(), parse_mode="HTML")
+        await message.answer(f"<b>{esc(title)}</b>\n\nЗаписей нет.", reply_markup=main_keyboard())
         return
 
-    await message.reply_text(format_header(title, sessions), reply_markup=main_keyboard(), parse_mode="HTML")
+    await message.answer(format_header(title, sessions), reply_markup=main_keyboard())
     for item in sessions[:limit]:
-        await message.reply_text(
+        await message.answer(
             format_session_short(item),
             reply_markup=session_keyboard(int(item["id"])),
-            parse_mode="HTML",
         )
     if len(sessions) > limit:
-        await message.reply_text(f"Показано {limit} из {len(sessions)} записей.")
+        await message.answer(f"Показано {limit} из {len(sessions)} записей.")
 
 
 async def find_session(session_id: int) -> dict[str, Any] | None:
-    future, past = await asyncio.gather(api.sessions(past=False, limit=500), api.sessions(past=True, limit=500))
+    future, past = await asyncio.gather(
+        BACKEND.sessions(past=False, limit=500),
+        BACKEND.sessions(past=True, limit=500),
+    )
     return next((item for item in future + past if int(item.get("id", 0)) == session_id), None)
 
 
-def generate_ics(sessions: list[dict[str, Any]], title: str) -> str:
-    lines = [
-        "BEGIN:VCALENDAR",
-        "VERSION:2.0",
-        "PRODID:-//Knyazkova Booking//Telegram Bot//RU",
-        "CALSCALE:GREGORIAN",
-        f"X-WR-CALNAME:{title}",
-    ]
-    for session in sessions:
-        if session.get("status") == "cancelled":
-            continue
-        dt = parse_dt(session)
-        if not dt:
-            continue
-        start = dt.strftime("%Y%m%dT%H%M%S")
-        end = (dt + timedelta(hours=1)).strftime("%Y%m%dT%H%M%S")
-        session_id = esc(session.get("id"))
-        client = str(session.get("client_name") or "Клиент").replace("\n", " ")
-        phone = str(session.get("client_phone") or "").replace("\n", " ")
-        service = str(session.get("service_name") or "Консультация").replace("\n", " ")
-        lines.extend(
-            [
-                "BEGIN:VEVENT",
-                f"UID:knyazkova-{session_id}@booking",
-                f"DTSTAMP:{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}",
-                f"DTSTART:{start}",
-                f"DTEND:{end}",
-                f"SUMMARY:{service} - {client}",
-                f"DESCRIPTION:Клиент: {client}\\nТелефон: {phone}\\nУслуга: {service}",
-                "END:VEVENT",
-            ]
-        )
-    lines.append("END:VCALENDAR")
-    return "\r\n".join(lines)
-
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await guard(update):
+async def notify_admin(text: str) -> None:
+    if BOT is None or SETTINGS.admin_id <= 0:
+        LOGGER.warning("Cannot notify admin: TELEGRAM_ADMIN_ID is not set")
         return
-    health = await api.health()
+    await BOT.send_message(SETTINGS.admin_id, text)
+
+
+# —————————————————————————————— Обработчики ——————————————————————————————
+
+
+async def cmd_start(message: Message) -> None:
+    if not await guard_message(message):
+        return
+    health = await BACKEND.health()
     status = "ok" if health else "unavailable"
-    await update.effective_message.reply_text(
-            f"<b>Админ-панель записи</b>\n\nBackend: {status}\nВыберите действие.\n\n"
-            f"<i>Управление расписанием:</i>\n"
-            f"<code>/block YYYY-MM-DD</code> — закрыть дату\n"
-            f"<code>/unblock YYYY-MM-DD</code> — открыть дату\n"
-            f"Например: <code>/block 2026-06-15 Отпуск</code>",
+    await message.answer(
+        "<b>Админ-панель записи</b>\n\n"
+        f"Backend: {status}\nВыберите действие.\n\n"
+        "<i>Управление расписанием:</i>\n"
+        "<code>/block YYYY-MM-DD</code> — закрыть дату\n"
+        "<code>/unblock YYYY-MM-DD</code> — открыть дату\n"
+        "Например: <code>/block 2026-06-15 Отпуск</code>",
         reply_markup=main_keyboard(),
-        parse_mode="HTML",
     )
 
-async def block_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await guard(update):
-        return
-    text_parts = (update.effective_message.text or "").split(maxsplit=2)
-    if len(text_parts) < 2:
-        await update.effective_message.reply_text("Использование: /block YYYY-MM-DD [причина]")
-        return
-    
-    date_str = text_parts[1]
-    reason = text_parts[2] if len(text_parts) > 2 else ""
-    
-    data = await api.request("POST", "/api/schedule/admin/block", json={"date": date_str, "reason": reason})
-    if data and data.get("success"):
-        await update.effective_message.reply_text(f"✅ Дата {date_str} успешно закрыта для записи.")
-    else:
-        await update.effective_message.reply_text(f"❌ Ошибка. Убедитесь, что формат даты YYYY-MM-DD.")
 
-async def unblock_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await guard(update):
+async def cmd_block(message: Message) -> None:
+    if not await guard_message(message):
         return
-    text_parts = (update.effective_message.text or "").split(maxsplit=1)
-    if len(text_parts) < 2:
-        await update.effective_message.reply_text("Использование: /unblock YYYY-MM-DD")
+    parts = (message.text or "").split(maxsplit=2)
+    if len(parts) < 2:
+        await message.answer("Использование: /block YYYY-MM-DD [причина]")
         return
-    
-    date_str = text_parts[1]
-    data = await api.request("DELETE", f"/api/schedule/admin/block/{date_str}")
-    if data and data.get("success"):
-        await update.effective_message.reply_text(f"✅ Дата {date_str} снова открыта для записи.")
-    else:
-        await update.effective_message.reply_text(f"❌ Ошибка открытия даты.")
 
-async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await guard(update):
+    date_str = parts[1]
+    reason = parts[2] if len(parts) > 2 else ""
+    data = await BACKEND.request("POST", "/api/schedule/admin/block", json={"date": date_str, "reason": reason})
+    if data and data.get("success"):
+        await message.answer(f"✅ Дата {date_str} успешно закрыта для записи.")
+    else:
+        await message.answer("❌ Ошибка. Убедитесь, что формат даты YYYY-MM-DD.")
+
+
+async def cmd_unblock(message: Message) -> None:
+    if not await guard_message(message):
         return
-    text = update.effective_message.text or ""
-    LOGGER.info("Incoming message from %s: %s", update.effective_user.id if update.effective_user else "unknown", text)
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2:
+        await message.answer("Использование: /unblock YYYY-MM-DD")
+        return
+
+    date_str = parts[1]
+    data = await BACKEND.request("DELETE", f"/api/schedule/admin/block/{date_str}")
+    if data and data.get("success"):
+        await message.answer(f"✅ Дата {date_str} снова открыта для записи.")
+    else:
+        await message.answer("❌ Ошибка открытия даты.")
+
+
+async def text_router(message: Message) -> None:
+    if not await guard_message(message):
+        return
+    text = message.text or ""
+    LOGGER.info(
+        "Incoming message from %s: %s",
+        message.from_user.id if message.from_user else "unknown",
+        text,
+    )
 
     if text == "Сегодня":
         start_at, end_at = period_today()
-        return await send_sessions(update, "Записи на сегодня", await api.sessions(start=start_at, end=end_at, limit=200))
+        return await send_sessions(message, "Записи на сегодня", await BACKEND.sessions(start=start_at, end=end_at, limit=200))
     if text == "Завтра":
         start_at, end_at = period_tomorrow()
-        return await send_sessions(update, "Записи на завтра", await api.sessions(start=start_at, end=end_at, limit=200))
+        return await send_sessions(message, "Записи на завтра", await BACKEND.sessions(start=start_at, end=end_at, limit=200))
     if text == "Эта неделя":
         start_at, end_at = period_week()
-        return await send_sessions(update, "Записи на эту неделю", await api.sessions(start=start_at, end=end_at, limit=300))
+        return await send_sessions(message, "Записи на эту неделю", await BACKEND.sessions(start=start_at, end=end_at, limit=300))
     if text == "Все записи":
-        return await send_sessions(update, "Будущие записи", await api.sessions(past=False, limit=200))
+        return await send_sessions(message, "Будущие записи", await BACKEND.sessions(past=False, limit=200))
     if text == "Платежи":
-        return await payments(update, context)
+        return await payments(message)
     if text == "Статистика":
-        return await stats(update, context)
+        return await stats(message)
     if text == "Экспорт календаря":
-        return await update.effective_message.reply_text("Выберите период.", reply_markup=export_keyboard())
+        return await message.answer("Выберите период.", reply_markup=export_keyboard())
     if text == "Обновить":
-        return await start(update, context)
+        return await cmd_start(message)
 
-    await update.effective_message.reply_text("Сообщение получено. Нажмите /start.", reply_markup=main_keyboard())
+    await message.answer("Сообщение получено. Нажмите /start.", reply_markup=main_keyboard())
 
 
-async def payments(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await guard(update):
-        return
-    items = await api.payments(limit=20)
+async def payments(message: Message) -> None:
+    items = await BACKEND.payments(limit=20)
     if not items:
-        await update.effective_message.reply_text("Платежей нет.", reply_markup=main_keyboard())
+        await message.answer("Платежей нет.", reply_markup=main_keyboard())
         return
+
     lines = ["<b>Последние платежи</b>"]
     for payment in items[:15]:
         lines.extend(
@@ -515,19 +346,20 @@ async def payments(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 f"ID: <code>{esc(payment.get('id'))}</code>",
             ]
         )
-    await update.effective_message.reply_text("\n".join(lines), reply_markup=main_keyboard(), parse_mode="HTML")
+    await message.answer("\n".join(lines), reply_markup=main_keyboard())
 
 
-async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await guard(update):
-        return
-    future, past = await asyncio.gather(api.sessions(past=False, limit=500), api.sessions(past=True, limit=500))
+async def stats(message: Message) -> None:
+    future, past = await asyncio.gather(
+        BACKEND.sessions(past=False, limit=500),
+        BACKEND.sessions(past=True, limit=500),
+    )
     sessions = future + past
     scheduled = sum(1 for item in sessions if item.get("status") == "scheduled")
     completed = sum(1 for item in sessions if item.get("status") == "completed")
     cancelled = sum(1 for item in sessions if item.get("status") == "cancelled")
     earned = sum(float(item.get("amount") or 0) for item in sessions if item.get("status") == "completed")
-    await update.effective_message.reply_text(
+    await message.answer(
         "<b>Статистика</b>\n\n"
         f"Всего записей: {len(sessions)}\n"
         f"Запланировано: {scheduled}\n"
@@ -535,156 +367,174 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"Отменено: {cancelled}\n"
         f"Доход по проведенным: {earned:.0f} руб.",
         reply_markup=main_keyboard(),
-        parse_mode="HTML",
     )
 
 
-async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await guard(update):
+async def on_session_callback(query: CallbackQuery) -> None:
+    if not await guard_callback(query):
         return
-    query = update.callback_query
-    if not query or not query.data:
+    if not query.data or query.message is None:
         return
     await query.answer()
 
-    if query.data.startswith("session:"):
-        _, action, raw_id = query.data.split(":", 2)
-        session_id = int(raw_id)
-        if action == "complete":
-            ok = await api.update_session_status(session_id, "completed")
-            await query.edit_message_reply_markup(reply_markup=None) if ok else None
-            await query.message.reply_text("Статус обновлен." if ok else "Не удалось обновить статус.")
-        elif action == "cancel":
-            ok = await api.delete_session(session_id)
-            await query.edit_message_reply_markup(reply_markup=None) if ok else None
-            await query.message.reply_text("Запись отменена." if ok else "Не удалось отменить запись.")
-        elif action == "detail":
-            session = await find_session(session_id)
-            if session:
-                await query.message.reply_text(format_session_full(session), reply_markup=session_keyboard(session_id), parse_mode="HTML")
-            else:
-                await query.message.reply_text("Сеанс не найден.")
-        return
+    _, action, raw_id = query.data.split(":", 2)
+    session_id = int(raw_id)
 
-    if query.data.startswith("export:"):
-        export_type = query.data.split(":", 1)[1]
-        now = datetime.now()
-        if export_type == "week":
-            start_at, end_at = period_week(now)
-            title, filename = "Записи на эту неделю", "knyazkova_week.ics"
-            sessions = await api.sessions(start=start_at, end=end_at, limit=500)
-        elif export_type == "next_week":
-            start_at, end_at = period_week(now + timedelta(days=7))
-            title, filename = "Записи на следующую неделю", "knyazkova_next_week.ics"
-            sessions = await api.sessions(start=start_at, end=end_at, limit=500)
-        elif export_type == "month":
-            start_dt = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-            next_month = (start_dt.replace(day=28) + timedelta(days=4)).replace(day=1)
-            title, filename = "Записи на месяц", "knyazkova_month.ics"
-            sessions = await api.sessions(start=start_dt.isoformat(), end=next_month.isoformat(), limit=500)
+    if action == "complete":
+        ok = await BACKEND.update_session_status(session_id, "completed")
+        if ok:
+            await _clear_reply_markup(query)
+        await query.message.answer("Статус обновлен." if ok else "Не удалось обновить статус.")
+    elif action == "cancel":
+        ok = await BACKEND.delete_session(session_id)
+        if ok:
+            await _clear_reply_markup(query)
+        await query.message.answer("Запись отменена." if ok else "Не удалось отменить запись.")
+    elif action == "detail":
+        session = await find_session(session_id)
+        if session:
+            await query.message.answer(format_session_full(session), reply_markup=session_keyboard(session_id))
         else:
-            title, filename = "Все будущие записи", "knyazkova_all.ics"
-            sessions = await api.sessions(past=False, limit=500)
-
-        if not sessions:
-            await query.message.reply_text("Записей для экспорта нет.")
-            return
-        await query.message.reply_document(
-            document=generate_ics(sessions, title).encode("utf-8"),
-            filename=filename,
-            caption=f"{title}\nЗаписей: {len(sessions)}",
-        )
+            await query.message.answer("Сеанс не найден.")
 
 
-async def reminders_loop(application: Application) -> None:
-    if not SETTINGS.reminders_enabled or SETTINGS.admin_id <= 0:
-        LOGGER.warning("Reminders disabled or TELEGRAM_ADMIN_ID is 0")
+async def _clear_reply_markup(query: CallbackQuery) -> None:
+    try:
+        await query.message.edit_reply_markup(reply_markup=None)
+    except Exception:  # noqa: BLE001 - сообщение могло устареть
+        LOGGER.debug("Could not clear reply markup", exc_info=True)
+
+
+async def on_export_callback(query: CallbackQuery) -> None:
+    if not await guard_callback(query):
         return
-    while True:
-        try:
-            for item in await api.reminders_due():
-                session_id = int(item.get("id", 0))
-                await application.bot.send_message(
-                    SETTINGS.admin_id,
-                    "<b>Напоминание о сеансе</b>\n\n" + format_session_full(item),
-                    parse_mode="HTML",
-                )
-                if session_id:
-                    await api.mark_reminder_sent(session_id)
-        except Exception:
-            LOGGER.exception("Reminder loop failed")
-        await asyncio.sleep(3600)
-
-
-async def morning_summary_loop(application: Application) -> None:
-    if not SETTINGS.morning_summary_enabled or SETTINGS.admin_id <= 0:
-        LOGGER.warning("Morning summary disabled or TELEGRAM_ADMIN_ID is 0")
+    if not query.data or query.message is None:
         return
-    last_sent = None
-    while True:
-        try:
-            now = datetime.now()
-            today = now.strftime("%Y-%m-%d")
-            if now.hour == SETTINGS.morning_summary_hour and last_sent != today:
-                start_at, end_at = period_today()
-                sessions = await api.sessions(start=start_at, end=end_at, status="scheduled", limit=200)
-                total = sum(float(item.get("amount") or 0) for item in sessions)
-                await application.bot.send_message(
-                    SETTINGS.admin_id,
-                    f"<b>Сводка на сегодня</b>\n\nЗапланировано: {len(sessions)}\nСумма: {total:.0f} руб.",
-                    parse_mode="HTML",
-                )
-                last_sent = today
-        except Exception:
-            LOGGER.exception("Morning summary loop failed")
-        await asyncio.sleep(1800)
+    await query.answer()
+
+    export_type = query.data.split(":", 1)[1]
+    now = datetime.now()
+    if export_type == "week":
+        start_at, end_at = period_week(now)
+        title, filename = "Записи на эту неделю", "knyazkova_week.ics"
+        sessions = await BACKEND.sessions(start=start_at, end=end_at, limit=500)
+    elif export_type == "next_week":
+        start_at, end_at = period_week(now + timedelta(days=7))
+        title, filename = "Записи на следующую неделю", "knyazkova_next_week.ics"
+        sessions = await BACKEND.sessions(start=start_at, end=end_at, limit=500)
+    elif export_type == "month":
+        start_dt = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        next_month = (start_dt.replace(day=28) + timedelta(days=4)).replace(day=1)
+        title, filename = "Записи на месяц", "knyazkova_month.ics"
+        sessions = await BACKEND.sessions(start=start_dt.isoformat(), end=next_month.isoformat(), limit=500)
+    else:
+        title, filename = "Все будущие записи", "knyazkova_all.ics"
+        sessions = await BACKEND.sessions(past=False, limit=500)
+
+    if not sessions:
+        await query.message.answer("Записей для экспорта нет.")
+        return
+
+    await query.message.answer_document(
+        BufferedInputFile(generate_ics(sessions, title).encode("utf-8"), filename=filename),
+        caption=f"{title}\nЗаписей: {len(sessions)}",
+    )
 
 
-async def post_init(application: Application) -> None:
-    health = await api.health()
+# ——————————————————————————————— Запуск ———————————————————————————————
+
+
+def _track(task: asyncio.Task) -> None:
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
+async def on_startup(bot: Bot) -> None:
+    health = await BACKEND.health()
     LOGGER.info("Backend: %s", "ok" if health else "unavailable")
-    protected = await api.can_access_protected_api() if SETTINGS.api_key else False
+    protected = await BACKEND.can_access_protected_api() if SETTINGS.api_key else False
     LOGGER.info("Protected backend API: %s", "ok" if protected else "unavailable")
+
     if SETTINGS.telegram_proxy:
         LOGGER.info("Telegram proxy: configured")
     else:
         LOGGER.warning("Telegram proxy is not configured; direct api.telegram.org connection will be used")
 
-    me = await application.bot.get_me()
+    me = await bot.get_me()
     LOGGER.info("Telegram bot: @%s (%s)", me.username, me.id)
-    await application.bot.delete_webhook(drop_pending_updates=False)
-    await application.bot.set_my_commands([BotCommand("start", "Open menu"), BotCommand("menu", "Open menu")])
-    application.create_task(reminders_loop(application))
-    application.create_task(morning_summary_loop(application))
+    await bot.delete_webhook(drop_pending_updates=False)
+    await bot.set_my_commands(
+        [
+            BotCommand(command="start", description="Открыть меню"),
+            BotCommand(command="menu", description="Открыть меню"),
+        ]
+    )
+
+    _track(
+        asyncio.create_task(
+            reminders_loop(
+                BACKEND,
+                notify_admin,
+                enabled=SETTINGS.reminders_enabled and SETTINGS.admin_id > 0,
+                build_text=lambda session: "<b>Напоминание о сеансе</b>\n\n" + format_session_full(session),
+            )
+        )
+    )
+    _track(
+        asyncio.create_task(
+            morning_summary_loop(
+                BACKEND,
+                notify_admin,
+                enabled=SETTINGS.morning_summary_enabled and SETTINGS.admin_id > 0,
+                hour=SETTINGS.morning_summary_hour,
+                build_text=lambda count, total: (
+                    f"<b>Сводка на сегодня</b>\n\nЗапланировано: {count}\nСумма: {total:.0f} руб."
+                ),
+            )
+        )
+    )
 
 
-async def post_shutdown(application: Application) -> None:
-    await api.close()
+async def on_shutdown() -> None:
+    for task in list(_background_tasks):
+        task.cancel()
+    if _background_tasks:
+        await asyncio.gather(*_background_tasks, return_exceptions=True)
+    await BACKEND.close()
 
 
-def build_application() -> Application:
-    if not SETTINGS.bot_token:
-        raise RuntimeError("TELEGRAM_BOT_TOKEN is not configured")
+def build_dispatcher() -> Dispatcher:
+    dispatcher = Dispatcher()
+    dispatcher.include_router(router)
 
-    builder = ApplicationBuilder().token(SETTINGS.bot_token).post_init(post_init).post_shutdown(post_shutdown)
-    if SETTINGS.telegram_proxy:
-        request = HTTPXRequest(proxy_url=SETTINGS.telegram_proxy, connect_timeout=30, read_timeout=30)
-        builder = builder.request(request).get_updates_request(request)
+    router.message.register(cmd_start, CommandStart())
+    router.message.register(cmd_start, Command("menu"))
+    router.message.register(cmd_block, Command("block"))
+    router.message.register(cmd_unblock, Command("unblock"))
+    router.callback_query.register(on_session_callback, F.data.startswith("session:"))
+    router.callback_query.register(on_export_callback, F.data.startswith("export:"))
+    router.message.register(text_router, F.text & ~F.text.startswith("/"))
 
-    app = builder.build()
-    app.add_handler(CommandHandler(["start", "menu"], start))
-    app.add_handler(CommandHandler("block", block_date))
-    app.add_handler(CommandHandler("unblock", unblock_date))
-    app.add_handler(CallbackQueryHandler(callbacks))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
-    return app
+    dispatcher.startup.register(on_startup)
+    dispatcher.shutdown.register(on_shutdown)
+    return dispatcher
 
 
 def main() -> None:
+    if not SETTINGS.bot_token:
+        raise RuntimeError("TELEGRAM_BOT_TOKEN is not configured")
     if SETTINGS.admin_id <= 0:
         LOGGER.warning("TELEGRAM_ADMIN_ID is 0; bot access is open to every Telegram user")
-    app = build_application()
-    app.run_polling(drop_pending_updates=False, allowed_updates=Update.ALL_TYPES)
+
+    session = AiohttpSession(proxy=SETTINGS.telegram_proxy) if SETTINGS.telegram_proxy else None
+    global BOT
+    BOT = Bot(
+        SETTINGS.bot_token,
+        session=session,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+    )
+    dispatcher = build_dispatcher()
+    dispatcher.run_polling(BOT, allowed_updates=dispatcher.resolve_used_update_types())
 
 
 if __name__ == "__main__":

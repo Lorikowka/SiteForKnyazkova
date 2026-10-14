@@ -1,0 +1,14 @@
+# NOTE: telegram-bot is built with the repository root as the build context
+# (see docker-compose.yml), so the effective ignore file is the root
+# .dockerignore. This file only applies if the bot directory is used as the
+# context directly.
+__pycache__
+*.pyc
+*.pyo
+.env
+logs
+.venv
+venv
+Dockerfile
+.dockerignore
+.git
