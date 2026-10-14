@@ -1,15 +1,16 @@
-FROM node:18-alpine
-
-
+# --- Сборка зависимостей (sqlite3 требует инструменты сборки на alpine) ---
+FROM node:20-alpine AS deps
+RUN apk add --no-cache python3 make g++
 WORKDIR /app
-
 COPY package*.json ./
+RUN npm ci --omit=dev
 
-RUN npm install --production
-
-
+# --- Рантайм ---
+FROM node:20-alpine
+ENV NODE_ENV=production
+ENV PORT=1488
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-
-EXPOSE 3000
-
+EXPOSE 1488
 CMD ["node", "server.js"]

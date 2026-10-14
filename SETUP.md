@@ -12,7 +12,7 @@
 ```
 Клиент заполняет форму → Выбирает время → Нажимает «Оплатить»
                               ↓
-                    POST /api/create-payment
+              POST /api/payments/create-payment
                               ↓
                     ЮКасса (страница оплаты)
                               ↓
@@ -20,15 +20,13 @@
                ↓                             ↓
           ✅ Оплатил                     ❌ Отменил
                ↓                             ↓
-        Webhook: payment.succeeded     Webhook: payment.canceled
+   Webhook: payment.succeeded      Webhook: payment.canceled
+   (POST /api/admin/webhook)       (POST /api/admin/webhook)
                ↓                             ↓
         • Обновить статус              • Обновить статус
-        • Сохранить сеанс в БД         • НЕ сохранять сеанс
-        • Отправить email клиенту      • НЕ отправлять email
-        • Уведомление в Telegram       • Уведомление в Telegram
-               ↓                             ↓
-        /payment-check.html            /payment-check.html
-        → redirect на главную          → /payment-failed.html
+        • /payment-check.html          • /payment-failed.html
+        • confirm-booking → запись
+        • email клиенту + уведомление
 ```
 
 ## 📧 Настройка Email (SMTP)
@@ -86,7 +84,7 @@ ID платежа: pay_xxxxx
 
 ### ✅ Успешная оплата
 1. Клиент попадает на `/payment-check.html?payment_id=...`
-2. Страница проверяет статус через API (до 10 попыток)
+2. Страница проверяет статус через API (до 20 попыток)
 3. При успехе → редирект на главную с модальным окном
 4. При повторной проверке — статус уже `succeeded`
 
@@ -99,9 +97,8 @@ ID платежа: pay_xxxxx
 ### Файлы страниц
 | Файл | Назначение |
 |------|-----------|
-| `payment-check.html` | Промежуточная проверка статуса |
-| `payment-failed.html` | Страница ошибки с деталями |
-| `payment-success.html` | Старая страница (можно удалить) |
+| `payment-check.html` + `js/payment-check.js` | Проверка статуса и подтверждение записи |
+| `payment-failed.html` + `js/payment-failed.js` | Страница ошибки с деталями и повтором |
 
 ## 🧪 Тестирование
 
@@ -124,9 +121,11 @@ cd backend && node server.js
 
 | Метод | Endpoint | Описание |
 |-------|----------|----------|
-| POST | `/api/create-payment` | Создать платёж |
-| GET | `/api/payment/:id` | Проверить статус платежа |
-| POST | `/api/webhook` | Webhook от ЮКассы |
+| POST | `/api/payments/create-payment` | Создать платёж |
+| GET | `/api/payments/:id` | Проверить статус платежа (по токену) |
+| POST | `/api/payments/:id/confirm-booking` | Подтвердить запись после оплаты |
+| POST | `/api/payments/:id/discard` | Отменить незавершённый платёж |
+| POST | `/api/admin/webhook` | Webhook от ЮКассы |
 | GET | `/api/services` | Список услуг и цен |
 | GET | `/api/schedule` | Доступные слоты |
 | GET | `/api/sessions` | Все сеансы (нужен API-Key) |
@@ -134,9 +133,11 @@ cd backend && node server.js
 
 ## 📁 Затронутые файлы
 
-- `backend/server.js` — логика платежей, email, webhook
+- `backend/server.js` — сборка приложения, middleware, статика, shutdown
 - `backend/database.js` — модуль БД с retry-логикой
+- `backend/src/services/paymentService.js` — интеграция с ЮKassa
+- `backend/src/services/notificationService.js` — уведомления
 - `backend/config.json` — услуги, цены, расписание
-- `frontend/payment-check.html` — проверка статуса оплаты
-- `frontend/payment-failed.html` — страница ошибки
+- `frontend/js/payment-check.js` — проверка статуса и подтверждение записи
+- `frontend/js/payment-failed.js` — страница ошибки и повтор оплаты
 - `frontend/index.html` — главная страница + модальное окно

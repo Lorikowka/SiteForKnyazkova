@@ -100,9 +100,13 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> "Settings":
+        admin_raw = (os.getenv("TELEGRAM_ADMIN_ID", "").strip()
+                     or os.getenv("TELEGRAM_CHAT_ID", "").strip())
+        admin_id = int(admin_raw) if admin_raw.lstrip("-").isdigit() else 0
+
         return cls(
             bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
-            admin_id=int(os.getenv("TELEGRAM_ADMIN_ID", "0") or "0"),
+            admin_id=admin_id,
             backend_url=os.getenv("BACKEND_URL", "http://localhost:1488").rstrip("/"),
             api_key=(os.getenv("BOT_API_KEY") or os.getenv("API_KEY", "")).strip(),
             telegram_proxy=os.getenv("TELEGRAM_PROXY", "").strip(),
@@ -204,11 +208,11 @@ class BackendClient:
         return bool(data and data.get("success"))
 
     async def reminders_due(self) -> list[dict[str, Any]]:
-        data = await self.request("GET", "/api/reminders/due")
+        data = await self.request("GET", "/api/sessions/reminders/due")
         return data.get("sessions", []) if data and data.get("success") else []
 
     async def mark_reminder_sent(self, session_id: int) -> bool:
-        data = await self.request("POST", f"/api/reminders/{session_id}/mark-sent")
+        data = await self.request("POST", f"/api/sessions/reminders/{session_id}/mark-sent")
         return bool(data and data.get("success"))
 
 
@@ -442,7 +446,7 @@ async def block_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     date_str = text_parts[1]
     reason = text_parts[2] if len(text_parts) > 2 else ""
     
-    data = await api.request("POST", "/api/admin/schedule/block", json={"date": date_str, "reason": reason})
+    data = await api.request("POST", "/api/schedule/admin/block", json={"date": date_str, "reason": reason})
     if data and data.get("success"):
         await update.effective_message.reply_text(f"✅ Дата {date_str} успешно закрыта для записи.")
     else:
@@ -457,7 +461,7 @@ async def unblock_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     
     date_str = text_parts[1]
-    data = await api.request("DELETE", f"/api/admin/schedule/block/{date_str}")
+    data = await api.request("DELETE", f"/api/schedule/admin/block/{date_str}")
     if data and data.get("success"):
         await update.effective_message.reply_text(f"✅ Дата {date_str} снова открыта для записи.")
     else:

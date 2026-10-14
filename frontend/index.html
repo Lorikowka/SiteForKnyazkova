@@ -4,11 +4,10 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: https:; connect-src 'self' http://localhost:3000 https://api.yookassa.ru https://backendtest-is-hard.vercel.app; frame-src 'self' https://yookassa.ru; base-uri 'self'; form-action 'self'; object-src 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: https:; connect-src 'self' https://api.yookassa.ru http://localhost:1488 http://127.0.0.1:1488; frame-src 'self' https://yookassa.ru; base-uri 'self'; form-action 'self'; object-src 'none'">
   
   <meta name="referrer" content="strict-origin-when-cross-origin">
-  <meta http-equiv="Referrer-Policy" content="strict-origin-when-cross-origin">
-  <meta http-equiv="X-XSS-Protection" content="0">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
   <meta http-equiv="X-Content-Type-Options" content="nosniff">
   
   <title>Екатерина Князькова — психолог</title>
@@ -249,11 +248,9 @@
         </div>
         <div class="payment-info">
           <div class="payment-row"><span>Получатель:</span><strong>ИП Князькова Екатерина Сергеевна</strong></div>
-          <!-- TODO: Замените на реальные реквизиты перед публикацией сайта -->
-          <div class="payment-row"><span>ИНН:</span><strong><!-- УКАЖИТЕ РЕАЛЬНЫЙ ИНН -->XXXXXXXXXXXX</strong></div>
-          <div class="payment-row"><span>Расчётный счёт:</span><strong><!-- УКАЖИТЕ РЕАЛЬНЫЙ Р/С -->XXXXXXXXXXXXXXXXXXX</strong></div>
+          <div class="payment-row"><span>ИНН:</span><strong>602504161769</strong></div>
+          <div class="payment-row"><span>ОГРНИП:</span><strong>326600000015803</strong></div>
           <div class="payment-row"><span>Платёжный сервис:</span><strong>ЮКасса (YooKassa)</strong></div>
-          <div class="payment-row"><span>ID магазина:</span><strong><!-- УКАЖИТЕ ID МАГАЗИНА ЮKASSA -->XXXXXXXX</strong></div>
         </div>
         <div class="payment-sber">
           <button class="yoo-btn" id="yoo-pay-btn">
@@ -265,6 +262,7 @@
             Оплатить через ЮКассу
           </button>
           <p class="payment-note">После нажатия вы будете перенаправлены на защищённую страницу оплаты ЮКассы.</p>
+          <p class="payment-status" id="pay-status" role="status" aria-live="polite"></p>
         </div>
         <div class="step-actions">
           <button class="secondary-btn" id="btn-back2">← Назад</button>
@@ -288,37 +286,43 @@
   <div class="container footer-inner">
     <div class="footer-contacts">
       <p class="footer-section-title">Контакты</p>
-      <a href="https://t.me/Ekaterina_K" target="_blank" class="footer-link footer-link-tg">
+      <a href="https://t.me/Ekaterina_K" target="_blank" rel="noopener" class="footer-link footer-link-tg">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm5.894 8.221-1.97 9.28c-.145.658-.537.818-1.084.508l-3-2.21-1.447 1.394c-.16.16-.295.295-.605.295l.213-3.053 5.56-5.023c.242-.213-.054-.333-.373-.12L7.16 13.37l-2.956-.924c-.643-.204-.657-.643.136-.953l11.57-4.461c.537-.194 1.006.131.984.189z"/></svg>
         Telegram: @Ekaterina_K
       </a>
-      <a href="https://vk.com/" target="_blank" class="footer-link footer-link-vk">
+      <a href="https://vk.com/" target="_blank" rel="noopener" class="footer-link footer-link-vk">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12.785 16.241s.288-.032.436-.194c.136-.148.132-.427.132-.427s-.02-1.304.585-1.496c.596-.19 1.365 1.26 2.179 1.818.614.418 1.08.326 1.08.326l2.17-.03s1.134-.07.596-1.043c-.044-.073-.314-.66-1.616-1.865-1.364-1.261-1.18-1.057.46-3.238.998-1.329 1.397-2.142 1.272-2.49-.12-.332-.854-.244-.854-.244l-2.44.015s-.181-.025-.315.056c-.132.08-.217.267-.217.267s-.387 1.04-.903 1.925c-1.088 1.87-1.524 1.97-1.703 1.853-.414-.268-.31-1.075-.31-1.648 0-1.793.27-2.54-.527-2.733-.265-.064-.46-.107-1.138-.114-.871-.009-1.608.003-2.025.208-.278.135-.492.437-.361.454.161.022.526.1.72.367.25.344.241 1.116.241 1.116s.144 2.112-.336 2.372c-.33.178-.782-.185-1.753-1.848-.497-.86-.873-1.812-.873-1.812s-.072-.18-.202-.277c-.156-.115-.373-.152-.373-.152l-2.318.015s-.348.01-.475.162c-.113.136-.009.417-.009.417s1.814 4.256 3.871 6.4c1.885 1.967 4.023 1.838 4.023 1.838h.97z"/></svg>
-        ВКонтакте (уточнить у заказчика)
+        ВКонтакте
       </a>
     </div>
     <div class="footer-requisites">
       <p class="footer-section-title">Реквизиты</p>
       <p>ИП Князькова Екатерина Сергеевна</p>
-      <!-- TODO: Замените на реальные реквизиты перед публикацией сайта -->
-      <p>ИНН: <!-- УКАЖИТЕ РЕАЛЬНЫЙ ИНН -->602504161769</p>
-      <p>ОГРНИП: <!-- УКАЖИТЕ РЕАЛЬНЫЙ ОГРНИП -->326600000015803</p>
-      <p>р/с: <!-- УКАЖИТЕ РЕАЛЬНЫЙ Р/С -->40817810755170284448</p>
-      <p>БИК: <!-- УКАЖИТЕ РЕАЛЬНЫЙ БИК -->044030653</p>
+      <p>ИНН: 602504161769</p>
+      <p>ОГРНИП: 326600000015803</p>
+      <p>р/с: 40817810755170284448</p>
+      <p>БИК: 044030653</p>
     </div>
   </div>
   <div class="footer-bottom">
-    <div class="container">© 2025 Екатерина Князькова — все права защищены</div>
+    <div class="container footer-bottom-inner">
+      <span>© 2025 Екатерина Князькова — все права защищены</span>
+      <nav class="footer-legal-links" aria-label="Правовая информация">
+        <a href="offer.html">Публичная оферта</a>
+        <a href="privacy.html">Политика конфиденциальности</a>
+        <a href="consent.html">Согласие на обработку данных</a>
+      </nav>
+    </div>
   </div>
 </footer>
 
-  <script src="js/config.js?v=1.0.1"></script>
-  <script src="js/utils.js?v=1.0.1"></script>
-  <script src="js/ui.js?v=1.0.1"></script>
-  <script src="js/gallery.js?v=1.0.1"></script>
-  <script src="js/booking.js?v=1.0.1"></script>
-  <script src="js/reviews.js?v=1.0.1"></script>
-  <script src="js/main.js?v=1.0.1"></script>
+  <script src="js/config.js?v=1.1.0"></script>
+  <script src="js/utils.js?v=1.1.0"></script>
+  <script src="js/ui.js?v=1.1.0"></script>
+  <script src="js/gallery.js?v=1.1.0"></script>
+  <script src="js/booking.js?v=1.1.0"></script>
+  <script src="js/reviews.js?v=1.1.0"></script>
+  <script src="js/main.js?v=1.1.0"></script>
 </body>
 </html>
 

@@ -23,24 +23,15 @@ function initGallery() {
 
   async function loadDiplomas() {
     try {
-      console.log('📡 Загрузка дипломов...');
-      const response = await fetch(`${BACKEND_URL}/api/diplomas`);
-      if (!response.ok) throw new Error(`Ошибка сервера: ${response.status}`);
-      
-      const data = await response.json();
-      if (data.success && data.diplomas) {
-        DIPLOMAS = data.diplomas;
-        console.log('✅ Дипломы получены:', DIPLOMAS.length);
-        renderDiplomaPreviews();
-      } else {
-        throw new Error(data.error || 'Не удалось получить список дипломов');
-      }
+      const data = await apiRequest('/api/diplomas');
+      if (!data.success || !data.diplomas) throw new Error(data.error || 'Не удалось получить список дипломов');
+      DIPLOMAS = data.diplomas;
+      renderDiplomaPreviews();
     } catch (error) {
-      console.error('❌ Ошибка загрузки дипломов:', error);
       if (diplomaScrollEl) {
-        diplomaScrollEl.innerHTML = `<p style="padding: 20px; color: #b33; text-align: center; width: 100%;">
-          Ошибка загрузки дипломов. Проверьте, запущен ли бэкенд.<br>
-          <small>${error.message}</small>
+        diplomaScrollEl.innerHTML = `<p class="diploma-error">
+          Не удалось загрузить дипломы. Проверьте соединение с сервером.<br>
+          <small>${sanitizeText(error.message)}</small>
         </p>`;
       }
     }
@@ -114,12 +105,23 @@ function initGallery() {
     DIPLOMAS.forEach((diploma, index) => {
       const item = document.createElement('div');
       item.className = 'diploma-item';
-      item.innerHTML = `
-        <div class="diploma-canvas-wrap">
-          <img src="${diploma.img}" alt="${diploma.title}" class="diploma-canvas">
-        </div>
-        <p class="diploma-caption">${diploma.title}</p>
-      `;
+
+      const wrap = document.createElement('div');
+      wrap.className = 'diploma-canvas-wrap';
+
+      const img = document.createElement('img');
+      img.src = diploma.img;
+      img.alt = diploma.title;
+      img.className = 'diploma-canvas';
+      img.loading = 'lazy';
+
+      const caption = document.createElement('p');
+      caption.className = 'diploma-caption';
+      caption.textContent = diploma.title;
+
+      wrap.appendChild(img);
+      item.appendChild(wrap);
+      item.appendChild(caption);
       item.addEventListener('click', () => openLightbox(index));
       diplomaScrollEl.appendChild(item);
     });

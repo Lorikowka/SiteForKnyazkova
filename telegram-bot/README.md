@@ -94,18 +94,27 @@ python bot.py
 - **Google**: Настройки → Добавить календарь → По URL
 - **Яндекс**: ⚙️ → Подписка на календарь → Вставить URL
 
-## Структура базы данных
+## Взаимодействие с backend
 
-Бот работает напрямую с SQLite базой backend:
-- `backend/data/payments.db` — платежи
-- `backend/data/payments.db` → таблица `sessions` — записи
+Бот не обращается к базе данных напрямую — только через HTTP API backend:
+
+- `GET /api/sessions` — список записей;
+- `PATCH /api/sessions/:id/status` — смена статуса записи;
+- `DELETE /api/sessions/:id` — отмена записи;
+- `GET /api/payments` — платежи;
+- `GET /api/sessions/reminders/due` — кому пора отправить напоминание;
+- `POST /api/sessions/reminders/:id/mark-sent` — отметить напоминание отправленным;
+- `POST /api/schedule/admin/block` и `DELETE /api/schedule/admin/block/:date` — закрыть/открыть день.
+
+Для доступа к защищённым эндпоинтам задайте `BOT_API_KEY` (должен совпадать
+с `BOT_API_KEYS` или `API_KEY` в конфигурации backend).
 
 ## Troubleshooting
 
 ### Бот не запускается
-1. Проверьте токен в `.env`
-2. Убедитесь, что БД существует
-3. Проверьте `TELEGRAM_ADMIN_ID`
+1. Проверьте `TELEGRAM_BOT_TOKEN` в `.env`.
+2. Убедитесь, что backend запущен по адресу `BACKEND_URL`.
+3. Проверьте `TELEGRAM_ADMIN_ID`.
 
 ### Нет записей
-- Убедитесь, что backend запущен и есть тестовые платежи в MOCK режиме
+- Убедитесь, что backend запущен и есть записи (в MOCK-режиме можно создать тестовые).

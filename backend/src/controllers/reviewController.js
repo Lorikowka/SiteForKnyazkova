@@ -1,6 +1,6 @@
 const db = require('../../database');
 const logger = require('../utils/logger');
-const { sendTelegramNotification } = require('../services/notificationService');
+const { sendTelegramNotification, escapeTelegramHtml } = require('../services/notificationService');
 
 const createReview = async (req, res) => {
   try {
@@ -20,15 +20,16 @@ const createReview = async (req, res) => {
     const reviewId = review && typeof review.lastID === 'number' ? review.lastID : review?.id;
 
     await sendTelegramNotification([
-      'Новый отзыв с сайта',
+      '⭐ <b>Новый отзыв с сайта</b>',
+      '',
       `ID: ${reviewId}`,
       `Оценка: ${rating}/5`,
-      `Имя: ${sanitizedName}`,
-      `Контакт: ${sanitizedContact}`,
-      `Отзыв: ${sanitizedMessage}`
+      `Имя: ${escapeTelegramHtml(sanitizedName)}`,
+      `Контакт: ${escapeTelegramHtml(sanitizedContact)}`,
+      `Отзыв: ${escapeTelegramHtml(sanitizedMessage)}`
     ].join('\n'));
 
-    logger.info(`Review created: #${reviewId}, rating: ${rating}, contact: ${sanitizedContact}`);
+    logger.info(`Review created: #${reviewId}, rating: ${rating}`);
     res.status(201).json({ success: true, id: reviewId });
   } catch (error) {
     logger.error(`Review error: ${error.message}`);
@@ -38,8 +39,8 @@ const createReview = async (req, res) => {
 
 const getReviews = async (req, res) => {
   try {
-    const limit = Math.min(parseInt(req.query.limit) || 50, 100);
-    const offset = parseInt(req.query.offset) || 0;
+    const limit = Math.min(parseInt(req.query.limit, 10) || 50, 100);
+    const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
     const reviews = await db.getAllReviews(limit, offset);
     res.json({ success: true, reviews });
   } catch (error) {

@@ -3,20 +3,22 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: https:; connect-src 'self' http://localhost:3000 https://api.yookassa.ru https://backendtest-is-hard.vercel.app; frame-src 'self' https://yookassa.ru; base-uri 'self'; form-action 'self'; object-src 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: https:; connect-src 'self' https://api.yookassa.ru http://localhost:1488 http://127.0.0.1:1488; frame-src 'self' https://yookassa.ru; base-uri 'self'; form-action 'self'; object-src 'none'">
   <meta name="referrer" content="strict-origin-when-cross-origin">
+  <meta name="robots" content="noindex, nofollow">
   <title>Проверка оплаты — Екатерина Князькова</title>
+  <link rel="icon" type="image/png" href="images/logo.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <style>
     :root {
-      --primary: #4CAF50;
-      --primary-hover: #43A047;
-      --bg-soft: #f8fcf8;
-      --text: #2e332e;
-      --text-muted: #5c665c;
-      --success: #4CAF50;
-      --error: #e53935;
+      --green-dark: #1f5f44;
+      --green-mid: #2c7a55;
+      --green-light: #eef6f0;
+      --text: #333;
+      --text-muted: #666;
+      --bg: #f8fbf8;
+      --error: #c0392b;
     }
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -25,148 +27,81 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      background-color: var(--bg-soft);
+      background: var(--bg);
       color: var(--text);
       padding: 20px;
+      line-height: 1.6;
     }
     .container {
-      background: white;
-      border-radius: 24px;
+      background: #fff;
+      border-radius: 20px;
       padding: 48px 32px;
-      max-width: 440px;
+      max-width: 460px;
       width: 100%;
       text-align: center;
-      box-shadow: 0 10px 40px rgba(138, 123, 106, 0.1);
+      box-shadow: 0 8px 32px rgba(0,0,0,0.08);
     }
     .status-icon {
       width: 80px; height: 80px;
-      margin: 0 auto 32px;
+      margin: 0 auto 28px;
       border-radius: 50%;
       display: flex; align-items: center; justify-content: center;
-      font-size: 32px;
+      font-size: 34px;
     }
     .status-icon.loading {
-      border: 4px solid #f3f3f3;
-      border-top: 4px solid var(--primary);
+      border: 4px solid var(--green-light);
+      border-top-color: var(--green-mid);
       animation: spin 1s linear infinite;
     }
-    .status-icon.success { background: #e8f5e9; color: var(--success); }
-    .status-icon.error { background: #ffebee; color: var(--error); }
-    
-    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-    
-    h1 { font-size: 24px; font-weight: 600; margin-bottom: 16px; color: var(--text); }
-    p { font-size: 16px; line-height: 1.6; color: var(--text-muted); margin-bottom: 32px; }
-    
+    .status-icon.success { background: var(--green-light); color: var(--green-mid); }
+    .status-icon.error { background: #fdecea; color: var(--error); }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    h1 { font-size: 24px; font-weight: 600; margin-bottom: 14px; }
+    p { font-size: 16px; color: var(--text-muted); margin-bottom: 28px; }
+
     .btn {
       display: block; width: 100%;
       padding: 16px; border-radius: 12px;
       text-decoration: none; font-weight: 600;
-      transition: all 0.3s ease;
       font-size: 16px; border: none; cursor: pointer;
+      transition: background 0.2s, transform 0.15s;
     }
-    .btn-primary { background: var(--primary); color: white; }
-    .btn-primary:hover { background: var(--primary-hover); transform: translateY(-2px); }
-    .btn-outline { border: 2px solid var(--primary); color: var(--primary); background: transparent; }
-    .btn-outline:hover { background: var(--bg-soft); }
-    
+    .btn-primary { background: var(--green-mid); color: #fff; }
+    .btn-primary:hover { background: var(--green-dark); transform: translateY(-1px); }
+    .btn-outline { border: 2px solid var(--green-mid); color: var(--green-mid); background: transparent; margin-top: 12px; }
+    .btn-outline:hover { background: var(--green-light); }
+
     .hidden { display: none; }
-    .actions { display: flex; flex-direction: column; gap: 12px; }
   </style>
 </head>
 <body>
 
 <div class="container">
-  <!-- Ожидание -->
   <div id="state-loading">
     <div class="status-icon loading"></div>
-    <h1>Проверяем платёж</h1>
-    <p>Это займёт всего несколько секунд. Пожалуйста, не закрывайте страницу.</p>
+    <h1>Проверяем оплату</h1>
+    <p>Это займёт несколько секунд. Пожалуйста, не закрывайте страницу.</p>
   </div>
 
-  <!-- Успех -->
   <div id="state-success" class="hidden">
     <div class="status-icon success">✓</div>
     <h1>Оплата принята!</h1>
-    <p>Запись успешно оформлена. Мы отправили подтверждение вам на почту и в мессенджеры.</p>
+    <p id="success-text">Запись оформлена. Подтверждение придёт на указанную почту и в мессенджеры.</p>
     <a href="index.html" class="btn btn-primary">Вернуться на сайт</a>
   </div>
 
-  <!-- Ошибка -->
   <div id="state-error" class="hidden">
     <div class="status-icon error">✕</div>
     <h1 id="error-title">Платёж не найден</h1>
-    <p id="error-desc">Не удалось подтвердить оплату. Если деньги были списаны, пожалуйста, напишите мне в Telegram.</p>
-    <div class="actions">
-      <a href="index.html#payment" class="btn btn-primary">Попробовать ещё раз</a>
-      <a href="https://t.me/Ekaterina_K" target="_blank" class="btn btn-outline">Написать в Telegram</a>
-    </div>
+    <p id="error-desc">Не удалось подтвердить оплату. Если деньги были списаны, напишите мне в Telegram.</p>
+    <a href="index.html#payment" class="btn btn-primary">Попробовать ещё раз</a>
+    <a href="https://t.me/Ekaterina_K" target="_blank" rel="noopener" class="btn btn-outline">Написать в Telegram</a>
   </div>
 </div>
 
-<script src="js/config.js?v=1.0.1"></script>
-<script>
-  const params = new URLSearchParams(window.location.search);
-  const paymentId = params.get('payment_id');
-  const token = params.get('token');
-
-  let attempts = 0;
-  const maxAttempts = 10;
-
-  function showState(state) {
-    ['loading', 'success', 'error'].forEach(s => {
-      document.getElementById('state-' + s).classList.toggle('hidden', s !== state);
-    });
-  }
-
-  async function checkStatus() {
-    if (!paymentId) {
-      showState('error');
-      return;
-    }
-
-    try {
-      const response = await fetch(`${BACKEND_URL}/api/payments/${paymentId}?token=${token}`);
-      const data = await response.json();
-
-      if (data.success && data.payment) {
-        const status = data.payment.status;
-
-        if (status === 'succeeded') {
-          showState('success');
-          // Через 5 секунд редирект на главную с параметром успеха
-          setTimeout(() => {
-            window.location.href = 'index.html?payment_success=true';
-          }, 5000);
-          return;
-        }
-
-        if (status === 'canceled' || status === 'expired') {
-          document.getElementById('error-title').textContent = 'Платёж отменён';
-          document.getElementById('error-desc').textContent = 'Срок ожидания оплаты истёк или транзакция была отклонена.';
-          showState('error');
-          return;
-        }
-      }
-
-      // Если всё еще в процессе, пробуем снова
-      attempts++;
-      if (attempts < maxAttempts) {
-        setTimeout(checkStatus, 3000);
-      } else {
-        document.getElementById('error-title').textContent = 'Оплата задерживается';
-        document.getElementById('error-desc').textContent = 'Платёж обрабатывается дольше обычного. Как только он пройдёт, вы получите уведомление.';
-        showState('error');
-      }
-
-    } catch (err) {
-      console.error('Ошибка проверки:', err);
-      showState('error');
-    }
-  }
-
-  // Запуск
-  checkStatus();
-</script>
+<script src="js/config.js"></script>
+<script src="js/utils.js"></script>
+<script src="js/payment-check.js"></script>
 </body>
 </html>

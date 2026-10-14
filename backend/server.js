@@ -3,198 +3,175 @@ const path = require('path');
 const fs = require('fs');
 const cors = require('cors');
 const helmet = require('helmet');
-const rateLimit = require('express-rate-limit');
 const dotenv = require('dotenv');
 
-// Load environment variables (root .env first, then local backend/.env overrides)
+// Переменные окружения: сначала корневой .env, затем backend/.env (переопределяет).
 dotenv.config({ path: path.join(__dirname, '..', '.env') });
 dotenv.config({ path: path.join(__dirname, '.env') });
 
 const logger = require('./src/utils/logger');
 const config = require('./src/utils/config');
+const { globalLimiter } = require('./src/middleware/rateLimit');
 const db = require('./database');
 
-const app = express();
 const FRONTEND_PATH = path.join(__dirname, '..', 'frontend');
+const app = express();
 
-// Доверяем прокси (необходимо для Vercel и правильной работы rate-limit)
+// Доверяем первому прокси, чтобы rate-limit и req.ip работали корректно.
 app.set('trust proxy', 1);
+app.disable('x-powered-by');
 
-// ——————————————————————————————
-// MIDDLEWARE
-// ——————————————————————————————
-
-// Простейшее логирование запросов
-app.use((req, res, next) => {
-  if (req.path.startsWith('/api/')) {
-    logger.info(`[API] ${req.method} ${req.path} - Query: ${JSON.stringify(req.query)}`);
-  }
-  next();
-});
-
-// Обеспечиваем готовность БД перед обработкой любого API запроса
-app.use('/api', async (req, res, next) => {
-  try {
-    await db.ready;
-    next();
-  } catch (err) {
-    logger.error('Database ready wait error: ' + err.message);
-    // Отправляем текст ошибки клиенту для отладки
-    res.status(500).json({ 
-      success: false, 
-      error: 'Database initialization failed',
-      details: err.message,
-      stack: config.app.nodeEnv === 'production' ? undefined : err.stack
-    });
-  }
-});
+// —————————————————————————————— MIDDLEWARE ——————————————————————————————
 
 app.use(helmet({
-  contentSecurityPolicy: config.app.nodeEnv === 'production' ? {
-    directives: {
-      defaultSrc: ["'self'"],
-      scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
-      styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
-      fontSrc: ["'self'", "https://fonts.gstatic.com", "data:"],
-      imgSrc: ["'self'", "data:", "https:"],
-      connectSrc: ["'self'", "https://api.yookassa.ru"],
-      frameSrc: ["'self'", "https://yookassa.ru"],
-    },
-  } : false,
+  contentSecurityPolicy: config.app.nodeEnv === 'production'
+    ? {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+        fontSrc: ["'self'", 'https://fonts.gstatic.com', 'data:'],
+        imgSrc: ["'self'", 'data:', 'https:'],
+        connectSrc: ["'self'", 'https://api.yookassa.ru'],
+        frameSrc: ["'self'", 'https://yookassa.ru'],
+        objectSrc: ["'none'"],
+        baseUri: ["'self'"],
+        formAction: ["'self'"]
+      }
+    }
+    : false,
   crossOriginEmbedderPolicy: false,
   crossOriginOpenerPolicy: false
 }));
 
+const allowedOrigins = new Set(config.app.allowedOrigins);
+const siteOrigin = (() => {
+  try {
+    return new URL(config.app.siteUrl).origin;
+  } catch {
+    return null;
+  }
+})();
+
 app.use(cors({
   origin: (origin, callback) => {
-    const allowed = process.env.ALLOWED_ORIGINS?.split(',') || [
-      'http://localhost',
-      'http://localhost:1488',
-      'http://localhost:3000',
-      'https://lorikowka.github.io'
-    ];
-    if (!origin || allowed.some(a => origin.startsWith(a))) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
+    if (!origin || allowedOrigins.has(origin) || origin === siteOrigin) {
+      return callback(null, true);
     }
+    return callback(new Error('Not allowed by CORS'));
   },
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key', 'X-Bot-API-Key']
 }));
 
-app.use(rateLimit({
-  windowMs: 60000,
-  max: 100,
-  message: { success: false, error: 'Слишком много запросов' }
-}));
+app.use(globalLimiter);
 
 app.use(express.json({
   limit: '10kb',
   verify: (req, res, buf) => {
+    // Сырое тело нужно для проверки подписи вебхука ЮKassa.
     req.rawBody = buf.toString('utf8');
   }
 }));
 app.use(express.urlencoded({ extended: true, limit: '10kb' }));
 
-// ——————————————————————————————
-// ROUTES
-// ——————————————————————————————
-const reviewRoutes = require('./src/routes/reviewRoutes');
-const paymentRoutes = require('./src/routes/paymentRoutes');
-const sessionRoutes = require('./src/routes/sessionRoutes');
-const scheduleRoutes = require('./src/routes/scheduleRoutes');
-const adminRoutes = require('./src/routes/adminRoutes');
-const serviceRoutes = require('./src/routes/serviceRoutes');
-
-app.use('/api/reviews', reviewRoutes);
-app.use('/api/payments', paymentRoutes);
-app.use('/api/sessions', sessionRoutes);
-app.use('/api/schedule', scheduleRoutes);
-app.use('/api/admin', adminRoutes);
-app.use('/api', serviceRoutes); // services and health
-
-// ——————————————————————————————
-// STATIC FILES
-// ——————————————————————————————
-if (fs.existsSync(FRONTEND_PATH)) {
-  app.use(express.static(FRONTEND_PATH));
-}
-
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', time: new Date().toISOString() });
+// Логирование API-запросов.
+app.use((req, res, next) => {
+  if (req.path.startsWith('/api/')) {
+    logger.info(`[API] ${req.method} ${req.path}`);
+  }
+  next();
 });
 
-app.get('/payment-failed', (req, res) => {
-  if (fs.existsSync(path.join(FRONTEND_PATH, 'payment-failed.html'))) {
-    res.sendFile(path.join(FRONTEND_PATH, 'payment-failed.html'));
-  } else {
-    res.status(404).json({ success: false, error: 'Payment failed page not found' });
+// Перед обработкой любого API-запроса убеждаемся, что схема БД готова.
+app.use('/api', async (req, res, next) => {
+  try {
+    await db.ready;
+    next();
+  } catch (err) {
+    logger.error(`Database initialization failed: ${err.message}`);
+    res.status(500).json({ success: false, error: 'Database initialization failed' });
   }
 });
 
-app.get('*', (req, res, next) => {
-  if (req.path.startsWith('/api/')) return next();
-  
-  // Если фронтенда нет рядом (как на Vercel), просто отдаем 404 для не-API путей
+// —————————————————————————————— ROUTES ——————————————————————————————
+
+app.use('/api/reviews', require('./src/routes/reviewRoutes'));
+app.use('/api/payments', require('./src/routes/paymentRoutes'));
+app.use('/api/sessions', require('./src/routes/sessionRoutes'));
+app.use('/api/schedule', require('./src/routes/scheduleRoutes'));
+app.use('/api/admin', require('./src/routes/adminRoutes'));
+app.use('/api', require('./src/routes/serviceRoutes')); // services, diplomas, health
+
+// Неизвестные API-маршруты — JSON 404 (а не HTML).
+app.use('/api', (req, res) => {
+  res.status(404).json({ success: false, error: 'Маршрут не найден' });
+});
+
+// —————————————————————————————— STATIC / SPA ——————————————————————————————
+
+if (fs.existsSync(FRONTEND_PATH)) {
+  app.use(express.static(FRONTEND_PATH, { extensions: ['html'] }));
+}
+
+app.get('*', (req, res) => {
   if (!fs.existsSync(FRONTEND_PATH)) {
-    return res.status(404).json({ 
-      success: false, 
-      message: 'API Server is running. Frontend is hosted elsewhere.',
-      endpoints: ['/api/schedule', '/api/services', '/api/reviews']
+    return res.status(404).json({
+      success: false,
+      message: 'API-сервер запущен. Фронтенд размещён отдельно.',
+      endpoints: ['/api/health', '/api/services', '/api/schedule']
     });
   }
 
-  const filePath = path.join(FRONTEND_PATH, req.path);
-  if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
-    return res.sendFile(filePath);
+  const requested = path.join(FRONTEND_PATH, path.normalize(req.path));
+  if (requested.startsWith(FRONTEND_PATH) && fs.existsSync(requested) && fs.statSync(requested).isFile()) {
+    return res.sendFile(requested);
   }
-  
-  const indexFile = path.join(FRONTEND_PATH, 'index.html');
-  if (fs.existsSync(indexFile)) {
-    res.sendFile(indexFile);
-  } else {
-    res.status(404).send('Not Found');
-  }
+  return res.sendFile(path.join(FRONTEND_PATH, 'index.html'));
 });
 
-// ——————————————————————————————
-// SERVER START
-// ——————————————————————————————
-const PORT = config.app.port;
+// —————————————————————————————— ERRORS ——————————————————————————————
+
+app.use((err, req, res, next) => {
+  if (err && err.message === 'Not allowed by CORS') {
+    return res.status(403).json({ success: false, error: 'Источник не разрешён' });
+  }
+  logger.error(`Unhandled error: ${err.message}`);
+  res.status(500).json({ success: false, error: 'Внутренняя ошибка сервера' });
+});
+
+// —————————————————————————————— START / SHUTDOWN ——————————————————————————————
 
 function startServer() {
-  const server = app.listen(PORT, () => {
-    logger.info(`
-╔═══════════════════════════════════════════════════════════╗
-║   🚀 Модульный сервер запущен                             ║
-║                                                           ║
-║   Порт: ${PORT}
-║   Режим: ${config.app.nodeEnv}
-║   Платежи: ${config.app.mockMode ? '🔧 MOCK' : '💳 ЮKassa'}
-║                                                           ║
-║   📱 Адрес: http://localhost:${PORT}                       ║
-╚═══════════════════════════════════════════════════════════╝
-    `);
+  const server = app.listen(config.app.port, () => {
+    logger.info(`Сервер запущен: http://localhost:${config.app.port} (${config.app.nodeEnv})`);
+    logger.info(`Оплата: ${config.app.mockMode ? 'MOCK-режим' : 'ЮKassa'}`);
   });
+
+  const shutdown = (signal) => {
+    logger.info(`Получен ${signal}, завершаем работу...`);
+    server.close(() => {
+      db.close().finally(() => process.exit(0));
+    });
+    // Форсированное завершение, если соединения не закрылись за 10 секунд.
+    setTimeout(() => process.exit(1), 10000).unref();
+  };
+
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+
   return server;
 }
 
 if (require.main === module) {
-  db.ready.then(() => {
-    return new Promise((resolve, reject) => {
-      db.db.run(`CREATE TABLE IF NOT EXISTS schedule_exceptions (
-        date TEXT PRIMARY KEY,
-        reason TEXT
-      )`, (err) => {
-        if (err) reject(err); else resolve();
-      });
+  db.ready
+    .then(startServer)
+    .catch((error) => {
+      logger.error(`Ошибка запуска: ${error.message}`);
+      process.exit(1);
     });
-  }).then(startServer).catch((error) => {
-    logger.error(`Server startup error: ${error.message}`);
-    process.exit(1);
-  });
 }
 
 module.exports = app;
+module.exports.startServer = startServer;

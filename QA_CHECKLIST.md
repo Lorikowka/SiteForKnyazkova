@@ -35,8 +35,9 @@ node --check backend\database.js
 node --check backend\migrations.js
 node --check backend\lib\security.js
 node --check backend\lib\sessionBooking.js
-node --check frontend\js\main.js
+Get-ChildItem frontend\js\*.js | ForEach-Object { node --check $_.FullName }
 python -m py_compile telegram-bot\bot.py
+python -m py_compile vk-bot\bot.py
 ```
 
 Из папки `backend`:
@@ -228,7 +229,7 @@ Invoke-RestMethod -Method Patch -Uri "http://localhost:1488/api/sessions/1/statu
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_ADMIN_ID=...
 BACKEND_URL=http://localhost:1488
-API_KEY=your_bot_api_key
+BOT_API_KEY=your_bot_api_key
 ```
 
 Запуск:

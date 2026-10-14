@@ -4,24 +4,26 @@ services:
     container_name: app_backend
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "1488:1488"
     env_file:
       - ./.env
     environment:
       - NODE_ENV=production
+      - PORT=1488
     volumes:
-      - ./backend:/app
-      - /app/node_modules
+      - ./backend/data:/app/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:1488/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
 
-    
   frontend:
     build: ./frontend
     container_name: app_frontend
     restart: unless-stopped
     ports:
       - "80:80"
-    volumes:
-      - ./frontend:/usr/share/nginx/html
     depends_on:
       - backend
 
@@ -32,7 +34,7 @@ services:
     env_file:
       - ./.env
     environment:
-      - BACKEND_URL=http://backend:3000
+      - BACKEND_URL=http://backend:1488
     volumes:
       - ./vk-bot/data:/app/data
       - ./vk-bot/logs:/app/logs

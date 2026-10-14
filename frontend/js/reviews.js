@@ -1,5 +1,5 @@
 /**
- * reviews.js — Форма отзывов
+ * reviews.js — Форма отзывов.
  */
 
 function initReviews() {
@@ -9,9 +9,15 @@ function initReviews() {
 
   if (!reviewForm) return;
 
+  const setStatus = (text, kind) => {
+    if (!reviewStatus) return;
+    reviewStatus.textContent = text || '';
+    reviewStatus.className = `feedback-status${kind ? ' ' + kind : ''}`;
+  };
+
   reviewForm.addEventListener('submit', async (e) => {
     e.preventDefault();
-    if (reviewStatus) { reviewStatus.textContent = ''; reviewStatus.className = 'feedback-status'; }
+    setStatus('');
 
     const rating = reviewForm.querySelector('input[name="rating"]:checked')?.value;
     const name = document.getElementById('review-name')?.value.trim();
@@ -19,26 +25,20 @@ function initReviews() {
     const message = document.getElementById('review-text')?.value.trim();
 
     if (!rating || !name || !contact || !message) {
-      if (reviewStatus) { reviewStatus.textContent = 'Заполните все поля'; reviewStatus.classList.add('error'); }
+      setStatus('Заполните все поля', 'error');
       return;
     }
 
     try {
       if (reviewSubmit) reviewSubmit.disabled = true;
-      const response = await fetch(`${BACKEND_URL}/api/reviews`, {
+      await apiRequest('/api/reviews', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ rating: Number(rating), name, contact, message })
       });
-      const data = await response.json();
-      if (data.success) {
-        reviewForm.reset();
-        if (reviewStatus) { reviewStatus.textContent = 'Спасибо за отзыв!'; reviewStatus.classList.add('success'); }
-      } else {
-        throw new Error(data.error);
-      }
-    } catch (err) {
-      if (reviewStatus) { reviewStatus.textContent = 'Ошибка при отправке'; reviewStatus.classList.add('error'); }
+      reviewForm.reset();
+      setStatus('Спасибо за отзыв!', 'success');
+    } catch (error) {
+      setStatus(error.message || 'Ошибка при отправке', 'error');
     } finally {
       if (reviewSubmit) reviewSubmit.disabled = false;
     }

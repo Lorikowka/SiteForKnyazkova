@@ -8,8 +8,10 @@
 - `GET /api/payments`
 - `PATCH /api/sessions/:id/status`
 - `DELETE /api/sessions/:id`
-- `GET /api/reminders/due`
-- `POST /api/reminders/:id/mark-sent`
+- `POST /api/sessions` — добавить запись вручную
+- `GET /api/sessions/reminders/due`
+- `POST /api/sessions/reminders/:id/mark-sent`
+- `POST /api/schedule/admin/block` / `DELETE /api/schedule/admin/block/:date` — выходные
 
 ## Запуск
 

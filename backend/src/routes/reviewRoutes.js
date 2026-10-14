@@ -2,15 +2,9 @@ const express = require('express');
 const { body } = require('express-validator');
 const reviewController = require('../controllers/reviewController');
 const { handleValidationErrors } = require('../middleware/validation');
-const rateLimit = require('express-rate-limit');
+const { strictLimiter } = require('../middleware/rateLimit');
 
 const router = express.Router();
-
-const strictLimiter = rateLimit({
-  windowMs: 60000,
-  max: 10,
-  message: { success: false, error: 'Слишком много попыток' }
-});
 
 router.post('/',
   strictLimiter,

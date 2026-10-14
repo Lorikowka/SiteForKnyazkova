@@ -1,15 +1,33 @@
+# Зависимости
 node_modules/
+backend/node_modules/
+
+# Переменные окружения (пример остаётся в репозитории)
 .env
-*.log
+.env.*
+!.env.example
+
+# База данных SQLite
 backend/data/*.db
 backend/data/*.db-shm
 backend/data/*.db-wal
 backend/data/*.db-journal
-backend/node_modules/
-telegram-bot/__pycache__/
+
+# Логи
+*.log
+vk-bot/logs/
+telegram-bot/logs/
+
+# Python
+__pycache__/
+*.pyc
 telegram-bot/venv/
-vk-bot/__pycache__/
 vk-bot/venv/
+
+# Редакторы
 .vscode/
 .idea/
-*.pyc
+
+# ОС
+.DS_Store
+Thumbs.db

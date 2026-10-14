@@ -1,41 +1,54 @@
+const path = require('path');
+const fs = require('fs');
 const db = require('../../database');
 const config = require('../utils/config');
 const logger = require('../utils/logger');
-const path = require('path');
-const fs = require('fs');
+
+const DIPLOMAS_PATH = path.join(__dirname, '..', '..', 'diplomas.json');
+
+let diplomasCache = null;
+
+function loadDiplomas() {
+  if (diplomasCache) return diplomasCache;
+  try {
+    diplomasCache = fs.existsSync(DIPLOMAS_PATH)
+      ? JSON.parse(fs.readFileSync(DIPLOMAS_PATH, 'utf8'))
+      : [];
+  } catch (error) {
+    logger.error(`Не удалось прочитать diplomas.json: ${error.message}`);
+    diplomasCache = [];
+  }
+  return diplomasCache;
+}
 
 const getServices = (req, res) => {
-  res.json({ 
-    success: true, 
-    services: config.services, 
-    schedule: config.schedule 
+  res.json({
+    success: true,
+    services: config.services,
+    schedule: config.schedule
   });
 };
 
 const getDiplomas = (req, res) => {
-  try {
-    const diplomasPath = path.join(__dirname, '..', '..', 'diplomas.json');
-    if (fs.existsSync(diplomasPath)) {
-      const diplomas = JSON.parse(fs.readFileSync(diplomasPath, 'utf8'));
-      res.json({ success: true, diplomas });
-    } else {
-      res.json({ success: true, diplomas: [] });
-    }
-  } catch (error) {
-    logger.error(`Get diplomas error: ${error.message}`);
-    res.status(500).json({ success: false, error: 'Не удалось загрузить список дипломов' });
-  }
+  res.json({ success: true, diplomas: loadDiplomas() });
 };
 
-const getHealth = (req, res) => {
-  res.json({
-    status: 'ok',
+const getHealth = async (req, res) => {
+  let database = 'ok';
+  try {
+    await db.get('SELECT 1');
+  } catch {
+    database = 'error';
+  }
+
+  res.status(database === 'ok' ? 200 : 503).json({
+    status: database === 'ok' ? 'ok' : 'degraded',
     timestamp: new Date().toISOString(),
     service: 'psixolog-payment-backend',
     version: '1.0.0',
     environment: config.app.nodeEnv,
     payment_mode: config.app.mockMode ? 'MOCK' : 'YooKassa',
-    port: config.app.port
+    database
   });
 };
 

@@ -3,8 +3,6 @@
  */
 
 document.addEventListener('DOMContentLoaded', () => {
-  console.log('✅ Инициализация модулей...');
-
   // 1. Инициализация UI (меню, скролл)
   if (typeof initUI === 'function') initUI();
 
