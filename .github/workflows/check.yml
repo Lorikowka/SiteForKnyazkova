@@ -1,0 +1,32 @@
+name: Verify application
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm ci
+        working-directory: backend
+      - run: npm run check
+        working-directory: backend
+      - run: npm run security:check
+        working-directory: backend
+      - run: npm audit --omit=dev --audit-level=high
+        working-directory: backend
+      - run: python -B bots-common/test_access.py
+      - run: docker build -t booking-backend-check ./backend
+      - run: docker build -f deploy/Dockerfile.caddy -t booking-gateway-check .
+      - run: docker build -f telegram-bot/Dockerfile -t booking-telegram-check .
+      - run: docker build -f vk-bot/Dockerfile -t booking-vk-check .
+      - run: docker run --rm -e SITE_DOMAIN=example.com booking-gateway-check caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+      - run: docker compose -f compose.production.yml --env-file .env.production.example config --quiet

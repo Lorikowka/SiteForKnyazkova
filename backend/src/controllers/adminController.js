@@ -1,77 +1,30 @@
-/**
- * Административные операции: вебхук ЮKassa и очистка базы.
- */
+/** Provider webhook and administrative cleanup. */
 import config from '../config/index.js';
 import db from '../db/index.js';
-import { verifyWebhookSignature } from '../lib/security.js';
-import { escapeTelegramHtml, sendTelegramNotification, sendVkBookingNotification } from '../services/notifications.js';
+import { syncPayment } from '../services/paymentSync.js';
 import logger from '../utils/logger.js';
 
-/** Удаляет отменённый платёж, если к нему не привязаны сеансы. */
-function discardPaymentIfUnused(paymentId) {
-  const payment = db.getPayment(paymentId);
-  if (!payment) return { discarded: false, reason: 'not_found' };
-  if (!['canceled', 'expired'].includes(payment.status)) return { discarded: false, reason: payment.status };
-
-  const sessions = db.getSessionsByPaymentId(paymentId);
-  if (sessions.length > 0) return { discarded: false, reason: 'has_sessions' };
-
-  const result = db.deletePayment(paymentId);
-  return { discarded: Boolean(result.changes) };
-}
-
-/** Обработчик вебхуков ЮKassa. */
 export async function handleWebhook(request, reply) {
   const event = request.body;
-  const object = event?.object;
-  if (!event?.event || !object) return reply.code(400).send('Invalid event format');
-
-  const signature = request.headers['x-yookassa-signature'];
-  const valid = verifyWebhookSignature({
-    body: request.rawBody || '',
-    signature,
-    secret: config.yookassa.webhookSecret,
-    logger
-  });
-  if (!valid) {
-    logger.warn('Отклонён вебхук с неверной подписью');
-    return reply.code(401).send('Invalid signature');
+  if (event?.type !== 'notification' || typeof event?.object?.id !== 'string') {
+    return reply.code(400).send('Invalid event format');
   }
-
-  const payment = db.getPaymentByProviderId(object.id);
-  logger.info(`Вебхук: ${event.event} ${object.id}`);
-  if (!payment) return reply.code(404).send('Payment not found');
-
-  if (event.event === 'payment.succeeded') {
-    if (payment.status === 'succeeded') return reply.code(200).send('OK');
-
-    db.updatePaymentStatus(payment.id, 'succeeded', object.paid_at);
-    await sendVkBookingNotification('payment_succeeded', {
-      payment: { ...payment, status: 'succeeded', amount: payment.amount || object.amount?.value },
-      status: 'pending_confirmation'
-    });
-    await sendTelegramNotification(
-      `✅ <b>Оплата получена!</b>\n\n💰 Сумма: ${escapeTelegramHtml(String(object.amount?.value ?? ''))} ₽\n🆔 ID: ${escapeTelegramHtml(object.id)}`
-    );
-  } else if (['payment.canceled', 'payment.expired'].includes(event.event)) {
-    if (['canceled', 'expired'].includes(payment.status)) return reply.code(200).send('OK');
-
-    db.updatePaymentStatus(payment.id, object.status);
-    await sendVkBookingNotification('payment_canceled', {
-      payment: { ...payment, status: object.status, amount: payment.amount || object.amount?.value },
-      status: object.status,
-      reason: object.cancellation_details?.reason || ''
-    });
-
-    const cleanup = discardPaymentIfUnused(payment.id);
-    if (cleanup.discarded) logger.info(`Удалён неиспользованный платёж: ${payment.id}`);
-
-    await sendTelegramNotification(
-      `❌ <b>Оплата отменена!</b>\n\n🆔 ID: ${escapeTelegramHtml(object.id)}\n📝 Причина: ${escapeTelegramHtml(object.cancellation_details?.reason || 'не указана')}`
-    );
+  if (!['payment.succeeded', 'payment.canceled', 'payment.waiting_for_capture'].includes(event.event)) {
+    return reply.code(200).send('Ignored');
   }
-
-  return reply.code(200).send('OK');
+  if (config.app.mockMode || !config.yookassa.isConfigured) return reply.code(503).send('Provider unavailable');
+  const payment = db.getPaymentByProviderId(event.object.id);
+  // Includes the race where creation has not persisted the provider ID yet.
+  if (!payment) return reply.code(503).send('Payment not available yet');
+  try {
+    // Only the ID is taken from the notification. Status, amount and currency
+    // are fetched with our merchant credentials from the provider API.
+    await syncPayment(payment);
+    return reply.code(200).send('OK');
+  } catch (error) {
+    logger.error({ paymentId: payment.id, err: error }, 'Webhook reconciliation failed');
+    return reply.code(503).send('Retry later');
+  }
 }
 
 /** Очистка базы: конкретный платёж или все данные (с явным подтверждением). */

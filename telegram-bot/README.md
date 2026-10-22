@@ -57,7 +57,7 @@ copy .env.example .env
 | Переменная | По умолчанию | Описание |
 |------------|--------------|----------|
 | `TELEGRAM_BOT_TOKEN` | — | токен бота от @BotFather (обязательно) |
-| `TELEGRAM_ADMIN_ID` | — | Telegram ID администратора; если не задан, берётся `TELEGRAM_CHAT_ID`; `0` = доступ всем |
+| `TELEGRAM_ADMIN_ID` | — | Telegram ID администратора; если не задан, берётся `TELEGRAM_CHAT_ID`; `0` запрещён: запуск требует ID администратора |
 | `TELEGRAM_CHAT_ID` | — | ID чата/канала для уведомлений |
 | `BACKEND_URL` | `http://localhost:1488` | адрес backend |
 | `BOT_API_KEY` / `API_KEY` | — | ключ к защищённым эндпоинтам |

@@ -30,7 +30,8 @@ function initBooking() {
 
   const state = {
     currentStep: 1,
-    fio: '', phone: '', email: '', service: '', serviceLabel: '',
+    fio: '', lastName: '', firstName: '', middleName: '',
+    phone: '', email: '', service: '', serviceLabel: '',
     serviceType: 'individual', price: 0, comment: '',
     selectedDate: null, selectedTime: null,
     calYear: new Date().getFullYear(), calMonth: new Date().getMonth()
@@ -55,23 +56,29 @@ function initBooking() {
   }
 
   function validateStep1() {
-    const fio = ($('fio')?.value || '').trim();
+    const lastName = ($('last-name')?.value || '').trim();
+    const firstName = ($('first-name')?.value || '').trim();
+    const middleName = ($('middle-name')?.value || '').trim();
     const phone = ($('phone')?.value || '').trim();
     const email = ($('email')?.value || '').trim();
     const service = serviceSelect.value;
 
-    const fioWords = fio.split(/\s+/).filter(word => word.length >= 2);
-    const fioValid = fioWords.length >= 2;
+    const namePattern = /^[\p{L}\p{M}'’ -]{1,80}$/u;
+    const lastNameValid = namePattern.test(lastName);
+    const firstNameValid = namePattern.test(firstName);
+    const middleNameValid = !middleName || namePattern.test(middleName);
     const phoneValid = phone.replace(/\D/g, '').length === 11;
     const emailValid = !email || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
     const serviceValid = Boolean(service);
 
-    setFieldError('fio', 'fio-error', !fioValid);
+    setFieldError('last-name', 'last-name-error', !lastNameValid);
+    setFieldError('first-name', 'first-name-error', !firstNameValid);
+    setFieldError('middle-name', 'middle-name-error', !middleNameValid);
     setFieldError('phone', 'phone-error', !phoneValid);
     setFieldError('email', 'email-error', !emailValid);
     setFieldError('service', 'service-error', !serviceValid);
 
-    return fioValid && phoneValid && emailValid && serviceValid;
+    return lastNameValid && firstNameValid && middleNameValid && phoneValid && emailValid && serviceValid;
   }
 
   async function loadSchedule() {
@@ -190,7 +197,10 @@ function initBooking() {
   $('btn-step1')?.addEventListener('click', () => {
     if (!validateStep1()) return;
     const opt = serviceSelect.options[serviceSelect.selectedIndex];
-    state.fio = $('fio').value.trim();
+    state.lastName = $('last-name').value.trim();
+    state.firstName = $('first-name').value.trim();
+    state.middleName = $('middle-name').value.trim();
+    state.fio = [state.lastName, state.firstName, state.middleName].filter(Boolean).join(' ');
     state.phone = $('phone').value.trim();
     state.email = $('email').value.trim();
     state.service = opt.value;
@@ -243,6 +253,9 @@ function initBooking() {
           amount: state.price,
           description: state.serviceLabel,
           customerName: state.fio,
+          customerLastName: state.lastName,
+          customerFirstName: state.firstName,
+          customerMiddleName: state.middleName,
           customerPhone: state.phone,
           customerEmail: state.email,
           serviceId: state.service,
@@ -261,6 +274,9 @@ function initBooking() {
         amount: state.price,
         description: state.serviceLabel,
         customerName: state.fio,
+        customerLastName: state.lastName,
+        customerFirstName: state.firstName,
+        customerMiddleName: state.middleName,
         customerPhone: state.phone,
         customerEmail: state.email,
         serviceId: state.service,

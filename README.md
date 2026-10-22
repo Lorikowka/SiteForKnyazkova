@@ -1,5 +1,7 @@
 # Сайт и система онлайн-записи — Екатерина Князькова
 
+Подготовка сервера, HTTPS, резервные копии и ограничения запуска: [PRODUCTION.md](PRODUCTION.md).
+
 Сайт психолога с онлайн-записью на консультации, приёмом оплаты через ЮKassa
 и администрированием через Telegram/VK-ботов.
 
@@ -88,7 +90,6 @@ cd vk-bot       && pip install -r requirements.txt && python bot.py
 | `SITE_URL` | Публичный адрес сайта (для return_url и ссылок) |
 | `MOCK_MODE` | `true` — оплата без обращения к ЮKassa |
 | `YOOKASSA_SHOP_ID`, `YOOKASSA_SECRET_KEY` | Ключи магазина ЮKassa |
-| `YOOKASSA_WEBHOOK_SECRET` | Секрет для проверки подписи вебхука |
 | `API_KEY` | Общий ключ для защищённых эндпоинтов |
 | `ADMIN_API_KEYS` | Ключи админ-эндпоинтов (через запятую) |
 | `BOT_API_KEYS` | Ключи эндпоинтов ботов (через запятую) |
@@ -110,7 +111,7 @@ cd vk-bot       && pip install -r requirements.txt && python bot.py
 | GET | `/api/payments/:id` | токен | Статус платежа |
 | POST | `/api/payments/:id/confirm-booking` | токен | Подтвердить запись после оплаты |
 | POST | `/api/payments/:id/discard` | токен | Отменить незавершённый платёж |
-| POST | `/api/admin/webhook` | подпись | Вебхук ЮKassa |
+| POST | `/api/admin/webhook` | проверка через API ЮKassa | Вебхук ЮKassa |
 | GET | `/api/sessions` | API-ключ | Список записей |
 | POST | `/api/sessions` | API-ключ | Создать запись вручную |
 | PATCH | `/api/sessions/:id/status` | API-ключ | Сменить статус |
@@ -132,7 +133,7 @@ cd vk-bot       && pip install -r requirements.txt && python bot.py
    POST /api/payments/:id/confirm-booking → создаётся запись
 ```
 
-Черновик записи (ФИО, время, услуга) хранится в `sessionStorage` до подтверждения.
+Черновик записи хранится в `sessionStorage`, но сервер использует только данные, сохранённые при создании платежа. Вебхук и фоновая сверка создают запись даже без возврата клиента на сайт.
 Если черновика нет, backend берёт данные из метаданных платежа.
 
 ## Деплой

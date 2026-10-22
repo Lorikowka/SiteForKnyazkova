@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { createReview, getReviews } from '../controllers/reviewController.js';
 import { limitOptions } from '../middleware/rateLimit.js';
 import { bodyValidator } from '../validation.js';
+import { reviewCreatedResponse } from '../schemas/responses.js';
 
 const reviewSchema = z.object({
   rating: z.coerce.number().int().min(1).max(5),
@@ -15,7 +16,8 @@ const reviewSchema = z.object({
 export default async function reviewRoutes(app) {
   app.post('/', {
     preHandler: bodyValidator(reviewSchema),
-    config: limitOptions(10)
+    config: limitOptions(10),
+    schema: { response: { 201: reviewCreatedResponse } }
   }, createReview);
 
   app.get('/', getReviews);

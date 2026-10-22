@@ -166,6 +166,43 @@ const migrations = [
           AND COALESCE(service_id, '') NOT IN (${list})
       `);
     }
+  },
+  {
+    id: '005_integer_money',
+    up: () => {
+      // Additive migration: legacy decimal columns stay readable during rollout.
+      ensureColumn('payments', 'amount_minor', 'amount_minor INTEGER');
+      ensureColumn('sessions', 'amount_minor', 'amount_minor INTEGER');
+      run('UPDATE payments SET amount_minor = CAST(ROUND(amount * 100) AS INTEGER) WHERE amount_minor IS NULL');
+      run('UPDATE sessions SET amount_minor = CAST(ROUND(amount * 100) AS INTEGER) WHERE amount_minor IS NULL');
+    }
+  },
+  {
+    id: '006_payment_event_history',
+    up: () => {
+      run(`
+        CREATE TABLE IF NOT EXISTS payment_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          payment_id TEXT NOT NULL,
+          event_type TEXT NOT NULL,
+          old_status TEXT,
+          new_status TEXT,
+          occurred_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (payment_id) REFERENCES payments(id) ON DELETE CASCADE
+        )
+      `);
+      run('CREATE INDEX IF NOT EXISTS idx_payment_events_payment_time ON payment_events(payment_id, occurred_at)');
+    }
+  },
+  {
+    id: '007_structured_person_names',
+    up: () => {
+      for (const [table, prefix] of [['payments', 'customer'], ['sessions', 'client']]) {
+        ensureColumn(table, `${prefix}_last_name`, `${prefix}_last_name TEXT`);
+        ensureColumn(table, `${prefix}_first_name`, `${prefix}_first_name TEXT`);
+        ensureColumn(table, `${prefix}_middle_name`, `${prefix}_middle_name TEXT`);
+      }
+    }
   }
 ];
 

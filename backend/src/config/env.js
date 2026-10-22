@@ -16,3 +16,6 @@ export const REPO_ROOT = path.resolve(BACKEND_ROOT, '..');
 
 dotenv.config({ path: path.join(REPO_ROOT, '.env') });
 dotenv.config({ path: path.join(BACKEND_ROOT, '.env') });
+
+// Business-local dates are shared by API, SQLite and bot containers.
+process.env.TZ ||= 'Europe/Moscow';

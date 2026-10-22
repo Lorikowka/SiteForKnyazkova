@@ -1,0 +1,121 @@
+# Standalone deployment: docker compose -f compose.production.yml --env-file .env.production up -d --build
+services:
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    init: true
+    env_file: .env.production
+    environment:
+      NODE_ENV: production
+      PORT: 1488
+      TZ: ${TZ:-Europe/Moscow}
+      TRUSTED_PROXIES: ${GATEWAY_IP:-172.30.20.2}
+      SQLITE_PATH: /app/data/payments.db
+    volumes:
+      - database:/app/data
+    expose:
+      - '1488'
+    healthcheck:
+      test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:1488/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    stop_grace_period: 30s
+    security_opt: ['no-new-privileges:true']
+    cap_drop: ['ALL']
+    logging:
+      driver: json-file
+      options: {max-size: '10m', max-file: '3'}
+
+  gateway:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.caddy
+    environment:
+      SITE_DOMAIN: ${SITE_DOMAIN:?Set SITE_DOMAIN in .env.production}
+    restart: unless-stopped
+    networks:
+      default:
+        ipv4_address: ${GATEWAY_IP:-172.30.20.2}
+    ports: ['80:80', '443:443', '443:443/udp']
+    volumes:
+      - certificates:/data
+      - gateway_config:/config
+    depends_on:
+      backend: {condition: service_healthy}
+    logging:
+      driver: json-file
+      options: {max-size: '10m', max-file: '3'}
+
+  backups:
+    build: ./backend
+    command: ['node', 'scripts/backup-loop.js']
+    environment:
+      SQLITE_PATH: /app/data/payments.db
+      BACKUP_DIR: /app/backups
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-30}
+    restart: unless-stopped
+    init: true
+    volumes:
+      - database:/app/data:ro
+      - backups:/app/backups
+    depends_on:
+      backend: {condition: service_healthy}
+    security_opt: ['no-new-privileges:true']
+    cap_drop: ['ALL']
+    logging:
+      driver: json-file
+      options: {max-size: '10m', max-file: '3'}
+
+  telegram-bot:
+    profiles: ['telegram']
+    build:
+      context: .
+      dockerfile: telegram-bot/Dockerfile
+    env_file: .env.production
+    environment:
+      BACKEND_URL: http://backend:1488
+      BOT_API_KEY: ${BOT_API_KEYS:-}
+    restart: unless-stopped
+    init: true
+    depends_on:
+      backend: {condition: service_healthy}
+    security_opt: ['no-new-privileges:true']
+    cap_drop: ['ALL']
+    logging:
+      driver: json-file
+      options: {max-size: '10m', max-file: '3'}
+
+  vk-bot:
+    profiles: ['vk']
+    build:
+      context: .
+      dockerfile: vk-bot/Dockerfile
+    env_file: .env.production
+    environment:
+      BACKEND_URL: http://backend:1488
+      BOT_API_KEY: ${BOT_API_KEYS:-}
+    restart: unless-stopped
+    init: true
+    volumes:
+      - vk_state:/app/data
+    depends_on:
+      backend: {condition: service_healthy}
+    security_opt: ['no-new-privileges:true']
+    cap_drop: ['ALL']
+    logging:
+      driver: json-file
+      options: {max-size: '10m', max-file: '3'}
+
+volumes:
+  database:
+  backups:
+  certificates:
+  gateway_config:
+  vk_state:
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: ${APP_SUBNET:-172.30.20.0/24}

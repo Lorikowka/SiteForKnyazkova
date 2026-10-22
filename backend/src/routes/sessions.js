@@ -14,8 +14,13 @@ import { requireApiKey } from '../middleware/auth.js';
 import { limitOptions } from '../middleware/rateLimit.js';
 import { bodyValidator } from '../validation.js';
 
+const namePart = z.string().trim().min(1).max(80).regex(/^[\p{L}\p{M}'’ -]+$/u);
+
 const createSessionSchema = z.object({
-  clientName: z.string().trim().min(1),
+  clientName: z.string().trim().min(1).max(240).optional(),
+  clientLastName: namePart.optional(),
+  clientFirstName: namePart.optional(),
+  clientMiddleName: namePart.optional(),
   clientPhone: z.string().trim().min(1),
   sessionDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   sessionTime: z.string().regex(/^\d{2}:\d{2}$/),
@@ -25,6 +30,10 @@ const createSessionSchema = z.object({
   sessionDatetime: z.string().optional(),
   amount: z.coerce.number().optional(),
   comment: z.string().optional()
+}).superRefine((value, context) => {
+  if (!value.clientName && (!value.clientLastName || !value.clientFirstName)) {
+    context.addIssue({ code: 'custom', message: 'Укажите фамилию и имя' });
+  }
 });
 
 const statusSchema = z.object({

@@ -193,7 +193,7 @@ def format_header(title: str, sessions: list[dict[str, Any]]) -> str:
 
 
 def is_admin(user_id: int | None) -> bool:
-    return SETTINGS.admin_id <= 0 or bool(user_id and user_id == SETTINGS.admin_id)
+    return SETTINGS.admin_id > 0 and bool(user_id and user_id == SETTINGS.admin_id)
 
 
 async def guard_message(message: Message) -> bool:
@@ -524,7 +524,9 @@ def main() -> None:
     if not SETTINGS.bot_token:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is not configured")
     if SETTINGS.admin_id <= 0:
-        LOGGER.warning("TELEGRAM_ADMIN_ID is 0; bot access is open to every Telegram user")
+        raise RuntimeError("A positive TELEGRAM_ADMIN_ID is required")
+    if not SETTINGS.api_key:
+        raise RuntimeError("BOT_API_KEY is required for protected backend access")
 
     session = AiohttpSession(proxy=SETTINGS.telegram_proxy) if SETTINGS.telegram_proxy else None
     global BOT

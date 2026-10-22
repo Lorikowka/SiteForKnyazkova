@@ -51,9 +51,6 @@ export async function getHealth(request, reply) {
     status: database === 'ok' ? 'ok' : 'degraded',
     timestamp: new Date().toISOString(),
     service: 'psixolog-payment-backend',
-    version: config.app.version,
-    environment: config.app.nodeEnv,
-    payment_mode: config.app.mockMode ? 'MOCK' : 'YooKassa',
     database
   });
 }

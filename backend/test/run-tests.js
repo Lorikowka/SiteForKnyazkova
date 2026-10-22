@@ -16,6 +16,7 @@ import path from 'node:path';
 const TEST_DB = path.join(os.tmpdir(), `psixolog-test-${Date.now()}.db`);
 
 process.env.NODE_ENV = 'test';
+process.env.LOG_LEVEL = 'silent';
 process.env.SQLITE_PATH = TEST_DB;
 process.env.API_KEY = 'test-admin-key';
 process.env.ADMIN_API_KEYS = 'test-admin-key';
@@ -25,7 +26,13 @@ process.env.TELEGRAM_BOT_TOKEN = '';
 process.env.TELEGRAM_CHAT_ID = '';
 process.env.VK_BOT_TOKEN = '';
 process.env.VK_NOTIFY_PEER_IDS = '';
+process.env.SMTP_USER = '';
+process.env.SMTP_PASS = '';
 process.env.SITE_URL = 'http://localhost:1488';
+
+const { default: config } = await import('../src/config/index.js');
+config.schedule.daysAhead = 36500;
+config.schedule.excludeWeekends = false;
 
 const { buildApp } = await import('../src/app.js');
 const { default: db } = await import('../src/db/index.js');

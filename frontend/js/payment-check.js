@@ -66,6 +66,9 @@
     if (draft) {
       Object.assign(body, {
         customerName: draft.customerName,
+        customerLastName: draft.customerLastName,
+        customerFirstName: draft.customerFirstName,
+        customerMiddleName: draft.customerMiddleName,
         customerPhone: draft.customerPhone,
         customerEmail: draft.customerEmail,
         serviceId: draft.serviceId,

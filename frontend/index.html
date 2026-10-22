@@ -177,10 +177,22 @@
 
       <div class="booking-step" id="step-1">
         <h3 class="step-title">Ваши данные и услуга</h3>
-        <div class="field-group">
-          <label for="fio">ФИО <span class="req">*</span></label>
-          <input type="text" id="fio" placeholder="Иванова Мария Петровна" autocomplete="name">
-          <span class="field-error" id="fio-error">Введите ФИО (минимум имя и фамилия)</span>
+        <div class="name-fields">
+          <div class="field-group">
+            <label for="last-name">Фамилия <span class="req">*</span></label>
+            <input type="text" id="last-name" placeholder="Иванова" autocomplete="family-name" maxlength="80">
+            <span class="field-error" id="last-name-error">Введите фамилию</span>
+          </div>
+          <div class="field-group">
+            <label for="first-name">Имя <span class="req">*</span></label>
+            <input type="text" id="first-name" placeholder="Мария" autocomplete="given-name" maxlength="80">
+            <span class="field-error" id="first-name-error">Введите имя</span>
+          </div>
+          <div class="field-group">
+            <label for="middle-name">Отчество</label>
+            <input type="text" id="middle-name" placeholder="Петровна" autocomplete="additional-name" maxlength="80">
+            <span class="field-error" id="middle-name-error">Проверьте отчество</span>
+          </div>
         </div>
         <div class="field-group">
           <label for="phone">Телефон <span class="req">*</span></label>
@@ -319,7 +331,7 @@
   <script src="js/utils.js?v=1.1.0"></script>
   <script src="js/ui.js?v=1.1.0"></script>
   <script src="js/gallery.js?v=1.1.0"></script>
-  <script src="js/booking.js?v=1.1.0"></script>
+  <script src="js/booking.js?v=1.2.0"></script>
   <script src="js/reviews.js?v=1.1.0"></script>
   <script src="js/main.js?v=1.1.0"></script>
 </body>

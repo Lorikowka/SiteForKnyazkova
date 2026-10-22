@@ -1,0 +1,26 @@
+{$SITE_DOMAIN} {
+    encode zstd gzip
+
+    # Access logging is intentionally disabled: payment URLs contain bearer tokens.
+    header {
+        Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: https:; connect-src 'self' https://api.yookassa.ru; frame-src 'self' https://yookassa.ru; object-src 'none'; base-uri 'self'; form-action 'self'"
+        X-Content-Type-Options nosniff
+        Referrer-Policy no-referrer
+        X-Frame-Options SAMEORIGIN
+        Strict-Transport-Security "max-age=31536000"
+        -Server
+    }
+    handle /api/* {
+        reverse_proxy backend:1488 {
+            header_up X-Forwarded-For {remote_host}
+        }
+    }
+    handle {
+        root * /srv
+        @html path / *.html
+        header @html Cache-Control "no-cache"
+        @staticAssets path /css/* /js/* /images/*
+        header @staticAssets Cache-Control "public, max-age=3600, stale-while-revalidate=86400"
+        file_server
+    }
+}

@@ -155,7 +155,7 @@ def blocked_keyboard() -> str:
 
 
 def is_admin(user_id: int) -> bool:
-    return not SETTINGS.admin_ids or user_id in SETTINGS.admin_ids
+    return user_id > 0 and user_id in SETTINGS.admin_ids
 
 
 async def send_message(peer_id: int, text: str, keyboard: str | None = None) -> None:
@@ -515,7 +515,9 @@ def build_bot() -> Bot:
             "VK_GROUP_ID is not configured in .env file. Please set it to your numeric VK community ID."
         )
     if not SETTINGS.admin_ids:
-        LOGGER.warning("VK_ADMIN_IDS is empty; bot access is open to any user who messages the community.")
+        raise RuntimeError("VK_ADMIN_IDS must contain administrator IDs")
+    if not SETTINGS.api_key:
+        raise RuntimeError("BOT_API_KEY is required for protected backend access")
 
     http_client = (
         AiohttpClient(connector=aiohttp.TCPConnector(ssl=False))

@@ -9,12 +9,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 
+import { validateProductionConfig } from './production.js';
 import { BACKEND_ROOT } from './env.js';
 
 const envSchema = z.object({
   NODE_ENV: z.string().default('development'),
   LOG_LEVEL: z.string().default('info'),
 
+  TRUSTED_PROXIES: z.string().default(''),
   PORT: z.coerce.number().int().positive().default(1488),
   SITE_URL: z.string().default(''),
   MOCK_MODE: z.string().default(''),
@@ -27,7 +29,6 @@ const envSchema = z.object({
 
   YOOKASSA_SHOP_ID: z.string().default(''),
   YOOKASSA_SECRET_KEY: z.string().default(''),
-  YOOKASSA_WEBHOOK_SECRET: z.string().default(''),
 
   TELEGRAM_BOT_TOKEN: z.string().default(''),
   TELEGRAM_CHAT_ID: z.string().default(''),
@@ -51,6 +52,7 @@ if (!parsed.success) {
   process.exit(1);
 }
 const env = parsed.data;
+validateProductionConfig({ ...process.env, ...env });
 
 function readJson(file) {
   return JSON.parse(fs.readFileSync(path.join(BACKEND_ROOT, file), 'utf8'));
@@ -76,6 +78,7 @@ const config = {
   app: {
     version,
     port,
+    trustedProxies: splitList(env.TRUSTED_PROXIES),
     siteUrl,
     mockMode: env.MOCK_MODE === 'true',
     nodeEnv: env.NODE_ENV,
@@ -97,7 +100,6 @@ const config = {
   yookassa: {
     shopId: env.YOOKASSA_SHOP_ID,
     secretKey: env.YOOKASSA_SECRET_KEY,
-    webhookSecret: env.YOOKASSA_WEBHOOK_SECRET,
     baseUrl: 'https://api.yookassa.ru/v3',
     authHeader: Buffer.from(`${env.YOOKASSA_SHOP_ID}:${env.YOOKASSA_SECRET_KEY}`).toString('base64'),
     isConfigured: Boolean(env.YOOKASSA_SHOP_ID && env.YOOKASSA_SECRET_KEY)

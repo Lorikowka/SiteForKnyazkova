@@ -1,9 +1,10 @@
 /**
- * Безопасность: проверка API-ключей и подписи вебхука ЮKassa.
+ * Безопасность: проверка API-ключей.
  */
 import crypto from 'node:crypto';
 
 function splitKeys(value) {
+  if (Array.isArray(value)) return value.map(String).map(v => v.trim()).filter(Boolean);
   return String(value || '')
     .split(',')
     .map((key) => key.trim())
@@ -24,7 +25,7 @@ function timingSafeEqualString(left, right) {
  * Ключи разделены на «админские» и «ботовские»: и те и другие дают доступ,
  * но роль сохраняется в `request.authRole` для дальнейшей логики.
  */
-export function createApiKeyAuth({ logger, adminKeys = [], botKeys = [] }) {
+export function createApiKeyAuth({ logger, adminKeys = [], botKeys = [], adminOnly = false }) {
   const admins = splitKeys(adminKeys);
   const bots = splitKeys(botKeys);
   const allKeys = [...admins, ...bots];
@@ -43,26 +44,12 @@ export function createApiKeyAuth({ logger, adminKeys = [], botKeys = [] }) {
         : null;
 
     if (!role) {
-      logger.warn({ path: request.url, method: request.method, ip: request.ip }, 'Invalid API key attempt');
+      logger.warn({ path: request.url.split('?')[0], method: request.method, ip: request.ip }, 'Invalid API key attempt');
       return reply.code(401).send({ success: false, error: 'Invalid authorization key' });
     }
 
+    if (adminOnly && role !== 'admin') return reply.code(403).send({ success: false, error: 'Administrator access required' });
     request.authRole = role;
     logger.info({ path: request.url, method: request.method, role, ip: request.ip }, 'Admin API access');
   };
-}
-
-/** Проверяет HMAC-подпись вебхука ЮKassa. */
-export function verifyWebhookSignature({ body, signature, secret, logger }) {
-  if (!secret) {
-    logger.error('YOOKASSA_WEBHOOK_SECRET is not configured; webhook rejected');
-    return false;
-  }
-  if (!signature) {
-    logger.warn('Missing X-Yookassa-Signature header');
-    return false;
-  }
-
-  const calculatedSignature = crypto.createHmac('sha256', secret).update(body).digest('hex');
-  return timingSafeEqualString(signature, calculatedSignature);
 }

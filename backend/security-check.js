@@ -173,7 +173,7 @@ function checkBackendSecurity() {
     { pattern: /from ['"]zod['"]|safeParse/, desc: 'Валидация данных' },
     { pattern: /process\.env/, desc: 'Использование переменных окружения' },
     { pattern: /YOOKASSA_SECRET_KEY/, desc: 'Ключ ЮKassa' },
-    { pattern: /createHmac|hmac|signature/i, desc: 'Проверка подписи вебхука' },
+    { pattern: /checkYooKassaPayment/, desc: 'Проверка платежа через API провайдера' },
     { pattern: /sanitizeInput|sanitize/, desc: 'Санитизация данных' },
     { pattern: /contentSecurityPolicy|frameSrc|X-Frame-Options/, desc: 'Защита от clickjacking' }
   ];

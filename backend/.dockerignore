@@ -1,7 +1,8 @@
 node_modules
-data
 .env
-*.log
-Dockerfile
-.dockerignore
-.git
+.env.*
+data
+logs
+*.db
+*.db-*
+test

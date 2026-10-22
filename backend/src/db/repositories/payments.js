@@ -1,26 +1,32 @@
 /** Репозиторий платежей. */
-import { all, get, run } from '../connection.js';
+import { all, get, run, sqlite } from '../connection.js';
+import { toMinorUnits } from '../../domain/money.js';
 
 const json = (value) => (value == null ? null : JSON.stringify(value));
 
 export function createPayment(data) {
-  return run(
+  const result = run(
     `INSERT INTO payments (
-       id, provider_payment_id, order_id, amount, currency, status, description,
-       customer_email, customer_phone, customer_name, service_id, service_name,
+       id, provider_payment_id, order_id, amount, amount_minor, currency, status, description,
+       customer_email, customer_phone, customer_name,
+       customer_last_name, customer_first_name, customer_middle_name, service_id, service_name,
        comment, payment_method, metadata
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       data.id,
       data.provider_payment_id ?? null,
       data.order_id,
       data.amount,
+      toMinorUnits(data.amount),
       data.currency || 'RUB',
       data.status || 'pending',
       data.description ?? null,
       data.customer_email ?? null,
       data.customer_phone ?? null,
       data.customer_name ?? null,
+      data.customer_last_name ?? null,
+      data.customer_first_name ?? null,
+      data.customer_middle_name ?? null,
       data.service_id ?? null,
       data.service_name ?? null,
       data.comment ?? null,
@@ -28,6 +34,11 @@ export function createPayment(data) {
       json(data.metadata)
     ]
   );
+  run(
+    'INSERT INTO payment_events (payment_id, event_type, new_status) VALUES (?, ?, ?)',
+    [data.id, 'payment_created', data.status || 'pending']
+  );
+  return result;
 }
 
 export function getPayment(id) {
@@ -57,7 +68,18 @@ export function countPayments() {
 }
 
 export function updatePaymentStatus(id, status, paidAt = null) {
-  return run('UPDATE payments SET status = ?, paid_at = ? WHERE id = ?', [status, paidAt, id]);
+  return sqlite.transaction(() => {
+    const current = get('SELECT status, paid_at FROM payments WHERE id = ?', [id]);
+    if (!current) return { changes: 0 };
+    const result = run('UPDATE payments SET status = ?, paid_at = ? WHERE id = ?', [status, paidAt, id]);
+    if (current.status !== status) {
+      run(
+        'INSERT INTO payment_events (payment_id, event_type, old_status, new_status) VALUES (?, ?, ?, ?)',
+        [id, 'status_changed', current.status, status]
+      );
+    }
+    return result;
+  })();
 }
 
 export function setPaymentProviderId(id, providerId) {

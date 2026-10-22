@@ -1,5 +1,6 @@
 /** Репозиторий записей на сеансы. */
 import { all, get, run } from '../connection.js';
+import { toMinorUnits } from '../../domain/money.js';
 
 /** Собирает WHERE-условие для выборок по сеансам. */
 function buildSessionFilter(filters = {}) {
@@ -7,11 +8,11 @@ function buildSessionFilter(filters = {}) {
   const params = [];
 
   if (filters.from) {
-    where.push('session_datetime >= ?');
+    where.push('datetime(session_datetime) >= datetime(?)');
     params.push(filters.from);
   }
   if (filters.to) {
-    where.push('session_datetime < ?');
+    where.push('datetime(session_datetime) < datetime(?)');
     params.push(filters.to);
   }
   if (filters.status) {
@@ -19,9 +20,9 @@ function buildSessionFilter(filters = {}) {
     params.push(filters.status);
   }
   if (filters.past === true) {
-    where.push("session_datetime < datetime('now', 'localtime')");
+    where.push("datetime(session_datetime) < datetime('now', 'localtime')");
   } else if (filters.past === false) {
-    where.push("session_datetime >= datetime('now', 'localtime')");
+    where.push("datetime(session_datetime) >= datetime('now', 'localtime')");
   }
 
   return {
@@ -33,7 +34,7 @@ function buildSessionFilter(filters = {}) {
 export function getAllSessions(limit = 100) {
   return all(
     `SELECT * FROM sessions
-     WHERE session_datetime >= datetime('now', 'localtime')
+     WHERE datetime(session_datetime) >= datetime('now', 'localtime')
      ORDER BY session_datetime ASC
      LIMIT ?`,
     [limit]
@@ -43,7 +44,7 @@ export function getAllSessions(limit = 100) {
 export function getPastSessions(limit = 50, offset = 0) {
   return all(
     `SELECT * FROM sessions
-     WHERE session_datetime < datetime('now', 'localtime')
+     WHERE datetime(session_datetime) < datetime('now', 'localtime')
      ORDER BY session_datetime DESC
      LIMIT ? OFFSET ?`,
     [limit, offset]
@@ -66,8 +67,8 @@ export function countSessionsByRange(filters = {}) {
 
 export function countSessions({ past = false } = {}) {
   const comparison = past
-    ? "session_datetime < datetime('now', 'localtime')"
-    : "session_datetime >= datetime('now', 'localtime')";
+    ? "datetime(session_datetime) < datetime('now', 'localtime')"
+    : "datetime(session_datetime) >= datetime('now', 'localtime')";
   const row = get(`SELECT COUNT(*) AS total FROM sessions WHERE ${comparison}`);
   return row ? row.total : 0;
 }
@@ -93,20 +94,25 @@ export function createSession(data) {
   return run(
     `INSERT INTO sessions (
        payment_id, client_name, client_phone, client_email,
+       client_last_name, client_first_name, client_middle_name,
        service_id, service_name, session_date, session_time, session_datetime,
-       amount, comment, status
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       amount, amount_minor, comment, status
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       data.payment_id,
       data.client_name,
       data.client_phone,
       data.client_email ?? null,
+      data.client_last_name ?? null,
+      data.client_first_name ?? null,
+      data.client_middle_name ?? null,
       data.service_id ?? null,
       data.service_name,
       data.session_date,
       data.session_time,
       data.session_datetime,
       data.amount,
+      toMinorUnits(data.amount),
       data.comment ?? null,
       data.status || 'scheduled'
     ]
@@ -136,8 +142,8 @@ export function getSessionsForReminder() {
     `SELECT * FROM sessions
      WHERE status = 'scheduled'
        AND reminder_sent = 0
-       AND session_datetime > datetime('now', 'localtime')
-       AND session_datetime <= datetime('now', '+48 hours', 'localtime')
+       AND datetime(session_datetime) > datetime('now', 'localtime')
+       AND datetime(session_datetime) <= datetime('now', '+48 hours', 'localtime')
      ORDER BY session_datetime ASC`
   );
 }

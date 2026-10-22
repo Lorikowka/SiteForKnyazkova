@@ -23,6 +23,7 @@ import scheduleRoutes from './routes/schedule.js';
 import serviceRoutes from './routes/services.js';
 import sessionRoutes from './routes/sessions.js';
 import logger from './utils/logger.js';
+import { reconcilePayments } from './services/paymentSync.js';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const FRONTEND_PATH = path.resolve(MODULE_DIR, '..', '..', 'frontend');
@@ -44,10 +45,9 @@ const CSP_DIRECTIVES = {
 export async function buildApp() {
   const app = Fastify({
     logger: false,
-    disableRequestLogging: true,
-    trustProxy: true,
+    trustProxy: config.app.trustedProxies.length ? config.app.trustedProxies : false,
     bodyLimit: 10240,
-    ignoreTrailingSlash: true
+    routerOptions: { ignoreTrailingSlash: true }
   });
 
   const hasFrontend = fs.existsSync(FRONTEND_PATH);
@@ -62,10 +62,8 @@ export async function buildApp() {
   const isOriginAllowed = (origin) => !origin || allowedOrigins.has(origin) || origin === siteOrigin;
 
   // —————————————————————————————— Тело запроса ——————————————————————————————
-  // Разбираем JSON как строку, чтобы сохранить сырое тело для проверки
-  // подписи вебхука ЮKassa.
+  // Разбираем JSON с единообразной обработкой пустого и некорректного тела.
   app.addContentTypeParser('application/json', { parseAs: 'string' }, (request, body, done) => {
-    request.rawBody = body;
     if (!body) return done(null, {});
     try {
       done(null, JSON.parse(body));
@@ -113,7 +111,7 @@ export async function buildApp() {
   // —————————————————————————————— Логирование API ——————————————————————————————
   app.addHook('onRequest', async (request) => {
     if (request.url.startsWith(`${API_PREFIX}/`)) {
-      logger.info(`[API] ${request.method} ${request.url}`);
+      logger.info({ method: request.method, path: request.url.split('?')[0], requestId: request.id }, 'API request');
     }
   });
 
@@ -163,7 +161,7 @@ export async function buildApp() {
 
     const isClientError = error.statusCode >= 400 && error.statusCode < 500;
     if (!isClientError) {
-      logger.error({ err: error, path: request.url }, `Unhandled error: ${error.message}`);
+      logger.error({ err: error, path: request.url.split('?')[0] }, `Unhandled error: ${error.message}`);
       return reply.code(500).send({ success: false, error: 'Внутренняя ошибка сервера' });
     }
 
@@ -173,5 +171,18 @@ export async function buildApp() {
     return reply.code(error.statusCode).send(payload);
   });
 
+  if (config.app.nodeEnv !== 'test') {
+    let pending;
+    let stopping = false;
+    const tick = () => {
+      if (!stopping && !pending) pending = reconcilePayments({ shouldStop: () => stopping })
+        .catch(error => logger.error({ err: error }, 'Payment reconciliation failed'))
+        .finally(() => { pending = undefined; });
+    };
+    const timer = setInterval(tick, 60_000);
+    timer.unref();
+    app.addHook('onReady', async () => { tick(); });
+    app.addHook('onClose', async () => { stopping = true; clearInterval(timer); await pending; });
+  }
   return app;
 }

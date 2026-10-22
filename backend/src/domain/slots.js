@@ -57,7 +57,7 @@ export function getSlotStateFromEntries(service, entries = []) {
 }
 
 /** Карта занятости слотов: `{ 'YYYY-MM-DD|HH:MM': [участники] }`. */
-export function buildSlotUsageMap({ excludePaymentId = null } = {}) {
+export function buildSlotUsageMap({ excludePaymentId = null, excludeSessionId = null } = {}) {
   const usageMap = {};
   const addEntry = (sessionDate, sessionTime, entry) => {
     if (!sessionDate || !sessionTime) return;
@@ -66,11 +66,12 @@ export function buildSlotUsageMap({ excludePaymentId = null } = {}) {
   };
 
   // 1. Все активные записи (одной выборкой).
-  const sessions = db.getAllSessions(2000);
+  const sessions = db.all('SELECT * FROM sessions');
   const paymentIdsWithSessions = new Set();
 
   for (const session of sessions) {
     if (session.payment_id) paymentIdsWithSessions.add(session.payment_id);
+    if (session.id === excludeSessionId) continue;
     if (!['scheduled', 'completed'].includes(session.status)) continue;
 
     const service = getRowServiceConfig(session);
@@ -89,7 +90,7 @@ export function buildSlotUsageMap({ excludePaymentId = null } = {}) {
   }
 
   // 2. Платежи, которые резервируют слот, но ещё не имеют записи.
-  const reservedPayments = db.getPaymentsByStatuses(['pending', 'succeeded', 'waiting_for_capture'], 1000);
+  const reservedPayments = db.all("SELECT * FROM payments WHERE status IN ('pending', 'succeeded', 'waiting_for_capture')");
 
   for (const payment of reservedPayments) {
     if (excludePaymentId && payment.id === excludePaymentId) continue;
@@ -117,9 +118,9 @@ export function buildSlotUsageMap({ excludePaymentId = null } = {}) {
 }
 
 /** Доступность слота для конкретной услуги, даты и времени. */
-export function getSlotAvailability({ serviceId, serviceName, sessionDate, sessionTime, excludePaymentId = null }) {
+export function getSlotAvailability({ serviceId, serviceName, sessionDate, sessionTime, excludePaymentId = null, excludeSessionId = null }) {
   const service = getServiceConfig(serviceId, serviceName);
-  const entries = buildSlotUsageMap({ excludePaymentId })[`${sessionDate}|${sessionTime}`] || [];
+  const entries = buildSlotUsageMap({ excludePaymentId, excludeSessionId })[`${sessionDate}|${sessionTime}`] || [];
   return getSlotStateFromEntries(service, entries);
 }
 
@@ -131,12 +132,13 @@ export function getDuplicateGroupBooking({
   sessionTime,
   customerEmail,
   customerPhone,
-  excludePaymentId = null
+  excludePaymentId = null,
+  excludeSessionId = null
 }) {
   const service = getServiceConfig(serviceId, serviceName);
   if (service.type !== 'group') return null;
 
-  const entries = buildSlotUsageMap({ excludePaymentId })[`${sessionDate}|${sessionTime}`] || [];
+  const entries = buildSlotUsageMap({ excludePaymentId, excludeSessionId })[`${sessionDate}|${sessionTime}`] || [];
   return entries.find((entry) => hasSameCustomerIdentity(
     { email: entry.email, phone: entry.phone },
     { email: customerEmail, phone: customerPhone }

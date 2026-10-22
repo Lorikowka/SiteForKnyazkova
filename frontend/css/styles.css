@@ -457,6 +457,12 @@ nav a.active { color: var(--green-mid); font-weight: 500; }
 
 .field-group { display: flex; flex-direction: column; gap: 6px; margin-bottom: 20px; }
 
+.name-fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
 .field-group label { font-size: 14px; font-weight: 500; color: #444; }
 .req { color: #e05a5a; }
 
@@ -991,6 +997,7 @@ footer {
 }
 
 @media (max-width: 768px) {
+  .name-fields { grid-template-columns: 1fr; gap: 0; }
   .header-inner { padding: 10px 0; }
 
   .logo img { width: 38px; height: 38px; }
