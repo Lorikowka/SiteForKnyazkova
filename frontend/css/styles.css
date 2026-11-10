@@ -21,6 +21,10 @@
 
 html { font-size: 16px; }
 
+section[id], footer[id] { scroll-margin-top: 100px; }
+:focus-visible { outline: 3px solid var(--green-dark); outline-offset: 4px; }
+button.diploma-canvas-wrap { border: 0; padding: 0; width: 100%; font: inherit; }
+
 body {
   font-family: 'Sora', sans-serif;
   background: var(--bg);

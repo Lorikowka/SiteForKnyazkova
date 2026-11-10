@@ -20,6 +20,7 @@ function initGallery() {
   let lbDragStart = { x: 0, y: 0 };
   let lbTranslate = { x: 0, y: 0 };
   let lbImg = null;
+  let previousFocus = null;
 
   async function loadDiplomas() {
     try {
@@ -75,16 +76,19 @@ function initGallery() {
 
   function openLightbox(index) {
     if (!lbOverlay) return;
+    previousFocus = document.activeElement;
     lbCurrentIndex = index;
     lbZoom = 1; lbTranslate = { x: 0, y: 0 };
     lbOverlay.classList.remove('hidden');
     document.body.style.overflow = 'hidden';
     renderLightboxImg();
+    lbClose?.focus();
   }
 
   function closeLightbox() {
     if (lbOverlay) lbOverlay.classList.add('hidden');
     document.body.style.overflow = '';
+    previousFocus?.focus();
   }
 
   function updateDiplomaNavButtons() {
@@ -106,7 +110,9 @@ function initGallery() {
       const item = document.createElement('div');
       item.className = 'diploma-item';
 
-      const wrap = document.createElement('div');
+      const wrap = document.createElement('button');
+      wrap.type = 'button';
+      wrap.setAttribute('aria-label', `Открыть: ${diploma.title}`);
       wrap.className = 'diploma-canvas-wrap';
 
       const img = document.createElement('img');
@@ -122,7 +128,7 @@ function initGallery() {
       wrap.appendChild(img);
       item.appendChild(wrap);
       item.appendChild(caption);
-      item.addEventListener('click', () => openLightbox(index));
+      wrap.addEventListener('click', () => openLightbox(index));
       diplomaScrollEl.appendChild(item);
     });
     updateDiplomaNavButtons();
@@ -134,6 +140,19 @@ function initGallery() {
   window.addEventListener('resize', updateDiplomaNavButtons);
   if (lbClose) lbClose.addEventListener('click', closeLightbox);
   if (lbOverlay) lbOverlay.addEventListener('click', e => { if (e.target === lbOverlay) closeLightbox(); });
+  document.addEventListener('keydown', e => {
+    if (!lbOverlay || lbOverlay.classList.contains('hidden')) return;
+    if (e.key === 'Escape') closeLightbox();
+    if (e.key === 'ArrowLeft') lbPrev?.click();
+    if (e.key === 'ArrowRight') lbNext?.click();
+    if (e.key === 'Tab') {
+      const controls = [lbClose, lbPrev, lbNext].filter(Boolean);
+      const index = controls.indexOf(document.activeElement);
+      const next = (index + (e.shiftKey ? -1 : 1) + controls.length) % controls.length;
+      e.preventDefault();
+      controls[next]?.focus();
+    }
+  });
   
   if (lbPrev) lbPrev.addEventListener('click', () => {
     lbCurrentIndex = (lbCurrentIndex - 1 + DIPLOMAS.length) % DIPLOMAS.length;
