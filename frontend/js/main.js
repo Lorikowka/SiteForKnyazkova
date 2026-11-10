@@ -21,18 +21,5 @@ document.addEventListener('DOMContentLoaded', () => {
     initPhoneMask(phoneInput);
   }
 
-  // Проверка успешной оплаты (показ модального окна)
-  const params = new URLSearchParams(window.location.search);
-  if (params.get('payment_success') === 'true') {
-    window.history.replaceState({}, '', window.location.pathname);
-    setTimeout(() => {
-      const modal = document.getElementById('success-modal');
-      if (modal) modal.classList.remove('hidden');
-    }, 500);
-  }
-
-  // Закрытие модального окна
-  document.getElementById('modal-close')?.addEventListener('click', () => {
-    document.getElementById('success-modal')?.classList.add('hidden');
-  });
+  // Успех показывается только на payment-check.html после подтверждения API.
 });

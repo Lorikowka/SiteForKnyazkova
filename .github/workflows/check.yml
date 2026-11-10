@@ -24,6 +24,8 @@ jobs:
       - run: npm audit --omit=dev --audit-level=high
         working-directory: backend
       - run: python -B bots-common/test_access.py
+      - run: node scripts/build-preview.mjs
+      - run: node --test test/frontend.test.mjs
       - run: docker build -t booking-backend-check ./backend
       - run: docker build -f deploy/Dockerfile.caddy -t booking-gateway-check .
       - run: docker build -f telegram-bot/Dockerfile -t booking-telegram-check .

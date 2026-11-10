@@ -87,7 +87,7 @@
       });
       clearDraft(paymentId);
       show('success');
-      setTimeout(() => { window.location.href = 'index.html?payment_success=true'; }, 4000);
+      setTimeout(() => { window.location.href = 'index.html'; }, 4000);
     } catch (error) {
       const code = error.data && error.data.code;
       if (code === 'slot_taken' || code === 'group_full') fail('slot_taken_after_payment');
